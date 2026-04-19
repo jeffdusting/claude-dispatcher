@@ -1,0 +1,90 @@
+[
+  {
+    "threadId": "1493182290841309204",
+    "sessionId": "e7bd4730-e3a2-45bf-97c4-c6110323d13f",
+    "threadName": "Resumed conversation",
+    "status": "expired",
+    "createdAt": 1776383759215,
+    "lastActiveAt": 1776399985261,
+    "messageQueue": [],
+    "turnCount": 3,
+    "lastError": null
+  },
+  {
+    "threadId": "1494551938124087317",
+    "sessionId": "3ed45f40-2453-46f4-ade2-5e115225f176",
+    "threadName": "Check dispatcher default model, update to Opus 4.7",
+    "status": "expired",
+    "createdAt": 1776399358608,
+    "lastActiveAt": 1776399725407,
+    "messageQueue": [],
+    "turnCount": 4,
+    "lastError": null
+  },
+  {
+    "threadId": "1494553078592966830",
+    "sessionId": "95ea13ad-c033-454a-84e0-668f98529df7",
+    "threadName": "Investigate /ultrareview command end-to-end logic",
+    "status": "expired",
+    "createdAt": 1776399631640,
+    "lastActiveAt": 1776400134968,
+    "messageQueue": [],
+    "turnCount": 1,
+    "lastError": null
+  },
+  {
+    "threadId": "1492795742106943488",
+    "sessionId": "ad9296d2-c455-4414-8189-4d5d906767f1",
+    "threadName": "Resumed conversation",
+    "status": "idle",
+    "createdAt": 1776410477350,
+    "lastActiveAt": 1776470051235,
+    "messageQueue": [],
+    "turnCount": 7,
+    "lastError": "DiscordjsError [FileNotFound]: File could not be found: /Users/claude/claude-workspace/generic/outbox/2026-04-17_learning-behaviors-rollout"
+  },
+  {
+    "threadId": "1494603490012565745",
+    "sessionId": "8bccb41a-de8c-49ad-88cd-8f11db106f5f",
+    "threadName": "Claude Routines: Research capabilities & team applications",
+    "status": "expired",
+    "createdAt": 1776411649333,
+    "lastActiveAt": 1776411876956,
+    "messageQueue": [],
+    "turnCount": 1,
+    "lastError": null
+  },
+  {
+    "threadId": "1494605096984772638",
+    "sessionId": "6891064e-e4e4-4f0c-95ee-885435f643ba",
+    "threadName": "Weekly AI digest: releases, summaries, & workflow fit",
+    "status": "expired",
+    "createdAt": 1776412036104,
+    "lastActiveAt": 1776412084581,
+    "messageQueue": [],
+    "turnCount": 1,
+    "lastError": null
+  },
+  {
+    "threadId": "1494827623682019338",
+    "sessionId": "6eee2f54-ab8b-46ce-b8b5-7cc9c7f951c6",
+    "threadName": "Based on the research documents, here's your thread title:\n\n**Dispatcher permission architecture: de",
+    "status": "idle",
+    "createdAt": 1776465103089,
+    "lastActiveAt": 1776473918665,
+    "messageQueue": [],
+    "turnCount": 4,
+    "lastError": null
+  },
+  {
+    "threadId": "1493947756728025168",
+    "sessionId": "7be72b7c-fe0e-492f-ba4a-4ace25406d7b",
+    "threadName": "Resumed conversation",
+    "status": "busy",
+    "createdAt": 1776476423211,
+    "lastActiveAt": 1776477626065,
+    "messageQueue": [],
+    "turnCount": 1,
+    "lastError": null
+  }
+]
