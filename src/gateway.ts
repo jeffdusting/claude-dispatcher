@@ -15,8 +15,12 @@ import {
   Client,
   GatewayIntentBits,
   type Message,
+  type MessageReaction,
   type ThreadChannel,
   type TextBasedChannel,
+  type User,
+  type PartialMessageReaction,
+  type PartialUser,
 } from 'discord.js'
 import { mkdirSync, createWriteStream } from 'fs'
 import { join, basename } from 'path'
@@ -44,6 +48,7 @@ import {
 import { runSession, generateTitle, snapshotOutbox, diffOutbox, type OutputFile } from './claude.js'
 import { chunk } from './chunker.js'
 import { logDispatcher } from './logger.js'
+import { ingestMessage, backfillAll } from './ingest.js'
 import {
   checkRateLimit,
   isCircuitOpen,
@@ -64,6 +69,7 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
   ],
@@ -103,7 +109,17 @@ function shouldProcess(msg: Message): boolean {
 }
 
 function isMentioned(msg: Message): boolean {
+  // Direct user mention
   if (client.user && msg.mentions.has(client.user)) return true
+  // Role mention — check if the bot is a member of any mentioned role
+  if (client.user && msg.mentions.roles.size > 0) {
+    for (const role of msg.mentions.roles.values()) {
+      if (role.members?.has(client.user.id)) return true
+    }
+  }
+  // Raw text match — catch any mention format (user or role) containing the bot's ID
+  if (client.user && msg.content.includes(client.user.id)) return true
+  // Reply to a bot message
   if (msg.reference?.messageId && recentSentIds.has(msg.reference.messageId)) return true
   return false
 }
@@ -111,7 +127,16 @@ function isMentioned(msg: Message): boolean {
 function cleanContent(msg: Message): string {
   let text = msg.content
   if (client.user) {
+    // Strip user mentions of the bot
     text = text.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim()
+  }
+  // Strip role mentions for roles the bot belongs to
+  if (msg.mentions.roles.size > 0 && client.user) {
+    for (const role of msg.mentions.roles.values()) {
+      if (role.members?.has(client.user.id)) {
+        text = text.replace(new RegExp(`<@&${role.id}>`, 'g'), '').trim()
+      }
+    }
   }
   return text
 }
@@ -621,6 +646,15 @@ async function handleMessage(msg: Message): Promise<void> {
 // ─── Discord Events ───────────────────────────────────────────────
 
 client.on('messageCreate', (msg) => {
+  // Passive ingestion runs first and independently of processing. A message
+  // can be both ingested (archived to the shared channel store) AND processed
+  // as a dispatcher task — they're orthogonal concerns.
+  try {
+    ingestMessage(msg)
+  } catch (err) {
+    logDispatcher('ingest_error', { error: String(err), channelId: msg.channelId })
+  }
+
   handleMessage(msg).catch((err) => {
     logDispatcher('handler_error', { error: String(err), channelId: msg.channelId })
   })
@@ -628,10 +662,63 @@ client.on('messageCreate', (msg) => {
 
 client.once('ready', (c) => {
   logDispatcher('gateway_connected', { tag: c.user.tag })
+  // Kick off backfill after gateway is ready. Fire-and-forget — failures are
+  // logged but don't block the dispatcher from serving live traffic.
+  backfillAll(client).catch((err) => {
+    logDispatcher('ingest_backfill_failed', { error: String(err) })
+  })
 })
 
 client.on('error', (err) => {
   logDispatcher('gateway_error', { error: String(err) })
+})
+
+// ─── Reaction Tracking (Quality Signal) ──────────────────────────
+
+const QUALITY_REACTIONS: Record<string, string> = {
+  '👍': 'positive',
+  '👎': 'negative',
+  '⭐': 'positive',
+  '❌': 'negative',
+  '✅': 'positive',
+}
+
+client.on('messageReactionAdd', async (
+  reaction: MessageReaction | PartialMessageReaction,
+  user: User | PartialUser,
+) => {
+  try {
+    // Ignore bot reactions (including our own)
+    if (user.bot) return
+
+    // Only track reactions on messages we sent
+    const messageId = reaction.message.id
+    if (!recentSentIds.has(messageId)) return
+
+    const emoji = reaction.emoji.name ?? ''
+    const signal = QUALITY_REACTIONS[emoji]
+    if (!signal) return
+
+    const channelId = reaction.message.channelId
+    const threadId = reaction.message.channel?.isThread()
+      ? channelId
+      : undefined
+    const session = threadId ? getSession(threadId) : undefined
+
+    logDispatcher('quality_signal', {
+      signal,
+      emoji,
+      userId: user.id,
+      username: ('username' in user) ? user.username : undefined,
+      messageId,
+      channelId,
+      threadId,
+      sessionId: session?.sessionId ?? null,
+      threadName: session?.threadName ?? null,
+    })
+  } catch (err) {
+    logDispatcher('reaction_handler_error', { error: String(err) })
+  }
 })
 
 export async function connect(): Promise<void> {

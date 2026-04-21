@@ -9,6 +9,7 @@
 import { loadSessions, cleanupSessions, shutdown as shutdownSessions } from './sessions.js'
 import { connect, disconnect } from './gateway.js'
 import { shutdown as shutdownHealth } from './health.js'
+import { sweepRetention, shutdownIngest } from './ingest.js'
 import { logDispatcher } from './logger.js'
 
 logDispatcher('startup', { pid: process.pid, version: '0.1.0' })
@@ -35,6 +36,17 @@ const heartbeatInterval = setInterval(() => {
   })
 }, 5 * 60 * 1000)
 
+// Ingest retention sweep — runs once on boot and daily thereafter.
+// Deletes per-channel JSONL files older than `retentionDays` (default 90).
+sweepRetention()
+const retentionInterval = setInterval(() => {
+  try {
+    sweepRetention()
+  } catch (err) {
+    logDispatcher('ingest_sweep_failed', { error: String(err) })
+  }
+}, 24 * 60 * 60 * 1000)
+
 // Graceful shutdown
 let shuttingDown = false
 function shutdown(): void {
@@ -44,8 +56,10 @@ function shutdown(): void {
 
   clearInterval(cleanupInterval)
   clearInterval(heartbeatInterval)
+  clearInterval(retentionInterval)
   shutdownSessions()
   shutdownHealth()
+  shutdownIngest()
 
   const forceTimer = setTimeout(() => {
     logDispatcher('shutdown_forced')

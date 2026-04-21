@@ -12,6 +12,8 @@ export const DISPATCHER_DIR = join(PROJECT_DIR, 'dispatcher')
 export const STATE_DIR = join(DISPATCHER_DIR, 'state')
 export const LOG_DIR = join(PROJECT_DIR, 'logs')
 export const OUTBOX_DIR = join(PROJECT_DIR, 'outbox')
+export const INGEST_DIR = join(STATE_DIR, 'channels')
+export const INGEST_CURSOR_FILE = join(STATE_DIR, 'ingest-cursors.json')
 
 // Discord plugin state (reuse access config)
 const DISCORD_STATE_DIR = join(homedir(), '.claude', 'channels', 'discord')
@@ -38,11 +40,31 @@ export interface GroupPolicy {
   allowFrom?: string[]
 }
 
+/**
+ * Passive ingestion config.
+ *
+ * Channels listed here are logged to state/channels/{id}/YYYY-MM-DD.jsonl
+ * without triggering a Claude session. Used as a shared context store that
+ * any session can query via scripts/query-channels.ts.
+ *
+ * - `channels`: list of channel IDs to ingest (in addition to any in `groups`).
+ * - `includeBots`: log bot/webhook messages too (default true).
+ * - `retentionDays`: purge JSONL files older than this (default 90).
+ * - `backfillLimit`: max messages to fetch per channel on startup (default 500).
+ */
+export interface IngestConfig {
+  channels?: string[]
+  includeBots?: boolean
+  retentionDays?: number
+  backfillLimit?: number
+}
+
 export interface AccessConfig {
   dmPolicy: string
   allowFrom: string[]
   groups: Record<string, GroupPolicy>
   pending: Record<string, unknown>
+  ingest?: IngestConfig
 }
 
 export function loadAccess(): AccessConfig {
@@ -52,6 +74,26 @@ export function loadAccess(): AccessConfig {
     throw new Error(`Could not load access config from ${ACCESS_FILE}`)
   }
 }
+
+/**
+ * Returns the set of channel IDs to passively ingest.
+ *
+ * Includes: (a) any IDs listed in `ingest.channels`, and (b) any channels
+ * already in `groups` (since we're already processing their messages, we
+ * may as well archive them into the shared store).
+ */
+export function ingestChannelIds(access: AccessConfig = loadAccess()): Set<string> {
+  const out = new Set<string>()
+  for (const id of access.ingest?.channels ?? []) out.add(id)
+  for (const id of Object.keys(access.groups ?? {})) out.add(id)
+  return out
+}
+
+export const INGEST_DEFAULTS = {
+  includeBots: true,
+  retentionDays: 90,
+  backfillLimit: 500,
+} as const
 
 // Session limits
 export const MAX_CONCURRENT_BUSY = 5

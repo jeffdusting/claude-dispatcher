@@ -175,24 +175,121 @@ cd ~/claude-workspace/generic/logs
 dispatcher/
 ├── src/
 │   ├── index.ts       # Entry point, lifecycle, heartbeat, shutdown
-│   ├── config.ts      # Constants, bot token, access config
+│   ├── config.ts      # Constants, bot token, access + ingest config
 │   ├── gateway.ts     # Discord connection, routing, threads, commands
 │   ├── sessions.ts    # Session registry, queue, persistence
 │   ├── claude.ts      # Claude CLI wrapper, stream parsing, outbox diff
 │   ├── health.ts      # Rate limiter, circuit breaker, cost tracking
 │   ├── chunker.ts     # Message splitting for Discord's 2000 char limit
-│   └── logger.ts      # Structured JSONL logging
+│   ├── logger.ts      # Structured JSONL logging
+│   └── ingest.ts      # Passive channel archive (see "Channel ingestion")
+├── scripts/
+│   ├── query-channels.ts    # CLI for querying the ingested archive
+│   └── discover-channels.ts # CLI for listing guild channels + writing name cache
 ├── state/
-│   ├── sessions.json  # Persisted session registry
-│   └── health.json    # Health state
+│   ├── sessions.json          # Persisted session registry
+│   ├── health.json            # Health state
+│   ├── ingest-cursors.json    # Last-ingested snowflake per channel
+│   ├── known-channels.json    # Discord-authoritative channel name cache
+│   └── channels/              # Per-channel JSONL message archive
 ├── attachments/       # Downloaded Discord attachments
 ├── start.sh           # Production startup with auto-restart
 ├── package.json
 └── tsconfig.json
 ```
 
+## Channel ingestion (cross-channel context)
+
+The dispatcher can passively ingest messages from additional Discord channels into a shared archive that any Claude session can query. This is separate from the trigger/task path — ingested channels don't spawn sessions; they just get logged.
+
+### Enable
+
+Add an `ingest` block to `~/.claude/channels/discord/access.json`:
+
+```json
+{
+  "dmPolicy": "deny",
+  "allowFrom": [],
+  "groups": { "1495629402908921876": { "requireMention": true } },
+  "ingest": {
+    "channels": [
+      "1400000000000000001",
+      "1400000000000000002"
+    ],
+    "includeBots": true,
+    "retentionDays": 90,
+    "backfillLimit": 500
+  },
+  "pending": {}
+}
+```
+
+The bot must be invited to the guild with **View Channel** + **Read Message History** on every channel listed. Channels already in `groups` are automatically ingested too (no need to list them twice).
+
+### Storage layout
+
+```
+dispatcher/state/
+├── channels/
+│   ├── {channelId}/
+│   │   ├── 2026-04-18.jsonl   # one message per line, UTC-partitioned
+│   │   ├── 2026-04-19.jsonl
+│   │   └── ...
+│   └── {otherChannelId}/...
+└── ingest-cursors.json        # last ingested snowflake per channel
+```
+
+Attachments are stored as metadata + URL only — their binary content is not copied until a session fetches it on demand.
+
+### Retention
+
+Files older than `retentionDays` (default 90) are deleted. The sweep runs once on boot and once every 24 hours thereafter.
+
+### Backfill on startup
+
+On each restart, the dispatcher fetches up to `backfillLimit` (default 500) recent messages per channel and stores any newer than the last-seen cursor. This keeps the archive continuous across restarts — no blind spots.
+
+### Channel name cache
+
+The query tool resolves channel names primarily from the ingested records themselves, but thread-only archives (records where every message was posted inside a thread) don't hold the parent channel's name. To guarantee correct labelling, populate an authoritative cache from Discord's REST API:
+
+```bash
+bun run scripts/discover-channels.ts --write-cache
+```
+
+This writes `state/known-channels.json` (a flat `{channelId: name}` map) which `query-channels.ts` reads on every run. Safe to re-run after renaming channels or adding new ones. Rerun after any significant channel changes.
+
+### Querying from within a session
+
+Use the query script to pull messages on demand:
+
+```bash
+bun run scripts/query-channels.ts --list
+bun run scripts/query-channels.ts --channel tenders --since 24h
+bun run scripts/query-channels.ts --channel 140000...01 --grep "contract" --limit 50
+bun run scripts/query-channels.ts --all --since 6h --author jad0404
+bun run scripts/query-channels.ts --channel general --since 2026-04-15 --until 2026-04-19 --format json
+```
+
+Filters:
+
+| Flag | Purpose |
+|------|---------|
+| `--list` | Show all ingested channels with message counts |
+| `--channel, -c` | Channel ID or partial name match |
+| `--all` | Query across every ingested channel |
+| `--since, -s` | ISO date/datetime, or relative (`30m`, `24h`, `7d`) |
+| `--until, -u` | Upper time bound (same format) |
+| `--author, -a` | Case-insensitive substring match on username |
+| `--grep, -g` | Regex (case-insensitive) against message content |
+| `--limit, -n` | Max messages (default 200; returns most recent if truncated) |
+| `--format, -f` | `text` (default) or `json` |
+
+The Chief-of-Staff agent should invoke this script via the Bash tool whenever cross-channel context is relevant to the user's request.
+
 ## Future work
 
 - **Phase 3 — Permission relay**: In-thread permission buttons instead of `bypassPermissions` mode. Would allow fine-grained approval for destructive operations (Bash, Edit outside outbox/).
-- **Multi-channel support**: Extend to `#navia-cloud`, `#investing`, etc. with per-channel agent configuration.
+- **Per-channel agent configuration**: Different agents for different trigger channels (e.g. `#investing` routes to a different system prompt).
 - **Streaming responses**: Post incremental output to Discord as Claude generates it, rather than waiting for completion.
+- **Semantic search over ingested channels**: Embed JSONL content for similarity queries, not just regex/substring.
