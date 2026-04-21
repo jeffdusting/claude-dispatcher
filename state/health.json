@@ -1,17 +1,33 @@
 {
   "startedAt": 1776743225116,
-  "lastActivityAt": 1776744067821,
+  "lastActivityAt": 1776745192533,
   "consecutiveErrors": 0,
   "circuitOpen": false,
   "circuitOpenedAt": null,
   "dailyStats": {
     "date": "2026-04-21",
-    "sessionsCreated": 0,
-    "turnsCompleted": 1,
+    "sessionsCreated": 1,
+    "turnsCompleted": 5,
     "totalCost": 0,
     "totalErrors": 0,
-    "messagesReceived": 3,
+    "messagesReceived": 7,
     "messagesQueued": 0,
-    "sessionsByThread": {}
+    "sessionsByThread": {
+      "1495997222234488862": {
+        "threadId": "1495997222234488862",
+        "threadName": "Resumed conversation",
+        "turns": 4,
+        "cost": 0,
+        "durationMs": 406345,
+        "toolsUsed": [
+          "Bash",
+          "Write",
+          "Edit"
+        ],
+        "errors": 0,
+        "startedAt": 1776744132654,
+        "lastActiveAt": 1776745192533
+      }
+    }
   }
 }

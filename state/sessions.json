@@ -67,13 +67,13 @@
   },
   {
     "threadId": "1495997222234488862",
-    "sessionId": null,
+    "sessionId": "cac4ff19-ea1d-4474-9e61-039af932d8be",
     "threadName": "Resumed conversation",
     "status": "busy",
     "createdAt": 1776744132653,
-    "lastActiveAt": 1776744132653,
+    "lastActiveAt": 1776745253784,
     "messageQueue": [],
-    "turnCount": 0,
+    "turnCount": 4,
     "lastError": null
   }
 ]
