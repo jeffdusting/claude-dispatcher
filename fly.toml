@@ -1,0 +1,43 @@
+# Fly.io deployment — Chief of Staff dispatcher
+# App: cos-dispatcher  |  Region: syd  |  Scale: single persistent machine
+
+app            = "cos-dispatcher"
+primary_region = "syd"
+
+[build]
+
+[env]
+  STATE_DIR = "/app/state"
+  NODE_ENV  = "production"
+
+[http_service]
+  internal_port = 8080
+  # Discord bots receive gateway events asynchronously — the machine must be
+  # alive 24/7.  Never auto-stop; always keep at least one machine running.
+  auto_stop_machines  = false
+  auto_start_machines = false
+  min_machines_running = 1
+  force_https = false
+
+  [[http_service.checks]]
+    grace_period = "20s"   # allow dispatcher startup before first probe
+    interval     = "30s"
+    method       = "GET"
+    path         = "/healthz"
+    timeout      = "5s"
+
+# VM: shared-cpu-1x@1GB.  The dispatcher is I/O-bound (Discord + subprocess
+# Claude Code workers) so a shared CPU is fine at this scale.  Each concurrent
+# Claude Code worker is a separate subprocess; if OOM errors appear under load,
+# upgrade to shared-cpu-1x@2gb or performance-1x@2gb.
+[[vm]]
+  size   = "shared-cpu-1x"
+  memory = "1gb"
+
+# Persistent volume for runtime state (sessions, health, ingest JSONL).
+# state/seeds/ is baked into the image and bootstraps state on first boot.
+# Grow with `fly volumes extend` if needed — 10 GB should last years at v1 scale.
+[[mounts]]
+  source       = "cos_state"
+  destination  = "/app/state"
+  initial_size = "10gb"

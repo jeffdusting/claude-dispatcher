@@ -1,0 +1,14 @@
+node_modules/
+.git
+
+# State is a mounted Fly.io volume at /app/state — not part of the image.
+# Exception: state/seeds/ bootstraps runtime state on first boot and must ship.
+state/
+!state/seeds/
+
+# Runtime artefacts
+outbox/
+logs/
+
+# Worker scratch directories (redundant given state/ exclusion, but explicit)
+state/projects/*.workers/

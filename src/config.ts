@@ -226,7 +226,9 @@ export const DISPATCHER_PAUSE_CRON: boolean = process.env.DISPATCHER_PAUSE_CRON 
 
 // Port for the internal health HTTP endpoint. Responds in all modes (including spare)
 // so spares can be monitored with a simple curl localhost:PORT/health.
-export const HEALTHCHECK_PORT: number = parseInt(process.env.HEALTHCHECK_PORT ?? '3000', 10)
+// Default 8080 matches the Fly.io http_service.internal_port in fly.toml.
+// Override with HEALTHCHECK_PORT env var if running locally on a port that's in use.
+export const HEALTHCHECK_PORT: number = parseInt(process.env.HEALTHCHECK_PORT ?? '8080', 10)
 
 // Pre-approved tools (Phase 1: no permission relay, so approve what agents need)
 export const ALLOWED_TOOLS = [

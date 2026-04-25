@@ -305,21 +305,27 @@ export function startHealthServer(port: number, role: string): void {
     port,
     fetch(req) {
       const url = new URL(req.url)
-      if (url.pathname !== '/health') {
-        return new Response('Not found', { status: 404 })
+      // /healthz — minimal Fly.io probe response
+      if (url.pathname === '/healthz') {
+        return Response.json({
+          status: 'ok',
+          uptime: Math.round((Date.now() - state.startedAt) / 1000),
+          version: '0.1.0',
+        })
       }
-      const body = JSON.stringify({
-        status: 'ok',
-        role,
-        pid: process.pid,
-        uptimeSeconds: Math.round((Date.now() - state.startedAt) / 1000),
-        memMB: Math.round(process.memoryUsage.rss() / 1024 / 1024),
-        circuitOpen: state.circuitOpen,
-        consecutiveErrors: state.consecutiveErrors,
-      })
-      return new Response(body, {
-        headers: { 'Content-Type': 'application/json' },
-      })
+      // /health — richer internal diagnostic response
+      if (url.pathname === '/health') {
+        return Response.json({
+          status: 'ok',
+          role,
+          pid: process.pid,
+          uptimeSeconds: Math.round((Date.now() - state.startedAt) / 1000),
+          memMB: Math.round(process.memoryUsage.rss() / 1024 / 1024),
+          circuitOpen: state.circuitOpen,
+          consecutiveErrors: state.consecutiveErrors,
+        })
+      }
+      return new Response('Not found', { status: 404 })
     },
   })
   logDispatcher('health_server_started', { port, role })
