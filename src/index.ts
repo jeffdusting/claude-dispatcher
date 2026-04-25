@@ -6,6 +6,7 @@
  * session for each, and routes follow-ups to the correct session.
  */
 
+import { seedStateIfAbsent } from './bootstrap.js'
 import { loadSessions, cleanupSessions, shutdown as shutdownSessions } from './sessions.js'
 import { loadThreadSessions, threadSessionCount } from './threadSessions.js'
 import { connect, disconnect, resolveThreadChannel, restoreContinuations, runKickoffCycle } from './gateway.js'
@@ -13,6 +14,9 @@ import { shutdown as shutdownHealth } from './health.js'
 import { sweepRetention, shutdownIngest } from './ingest.js'
 import { listActiveProjects, archiveProject } from './projects.js'
 import { logDispatcher } from './logger.js'
+
+// Seed missing runtime state files from state/seeds/ on first boot.
+seedStateIfAbsent()
 
 logDispatcher('startup', { pid: process.pid, version: '0.1.0' })
 
