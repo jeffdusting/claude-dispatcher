@@ -16,6 +16,8 @@ import {
   PROJECT_DIR,
   OUTBOX_DIR,
 } from './config.js'
+import { continuationFilePath } from './continuation.js'
+import { getThreadRecord } from './threadSessions.js'
 import { logDispatcher } from './logger.js'
 
 export interface ClaudeMessage {
@@ -48,11 +50,33 @@ export interface OutputFile {
   name: string
 }
 
+/**
+ * Should this outbox entry be considered an attachable deliverable?
+ *
+ * Filters out:
+ *  - directories (Discord.js throws FileNotFound when given a directory path)
+ *  - dotfiles (.DS_Store etc.)
+ *  - Word/Excel lock files (~$*)
+ *  - other non-regular files (symlinks to nowhere, sockets, etc.)
+ */
+function isAttachableOutboxEntry(name: string): boolean {
+  if (name.startsWith('.')) return false
+  if (name.startsWith('~$')) return false
+  let st
+  try {
+    st = statSync(join(OUTBOX_DIR, name))
+  } catch {
+    return false
+  }
+  return st.isFile()
+}
+
 /** Snapshot outbox directory listing for diffing after a session run. */
 export function snapshotOutbox(): Map<string, number> {
   const snap = new Map<string, number>()
   try {
     for (const name of readdirSync(OUTBOX_DIR)) {
+      if (!isAttachableOutboxEntry(name)) continue
       try {
         snap.set(name, statSync(join(OUTBOX_DIR, name)).mtimeMs)
       } catch {}
@@ -66,6 +90,7 @@ export function diffOutbox(before: Map<string, number>): OutputFile[] {
   const results: OutputFile[] = []
   try {
     for (const name of readdirSync(OUTBOX_DIR)) {
+      if (!isAttachableOutboxEntry(name)) continue
       try {
         const mtime = statSync(join(OUTBOX_DIR, name)).mtimeMs
         const prev = before.get(name)
@@ -91,14 +116,22 @@ export async function runSession(opts: {
   prompt: string
   sessionId?: string | null
   threadId: string
+  /** Claude agent to run. Defaults to CLAUDE_AGENT (chief-of-staff). */
+  agent?: string
+  /** Claude model to run. Defaults to CLAUDE_MODEL. */
+  model?: string
   onProgress?: (text: string) => void
 }): Promise<SessionResult> {
   const { prompt, sessionId, threadId, onProgress } = opts
+  // Agent/model resolution order: explicit opts > per-thread override > env default.
+  const threadRecord = getThreadRecord(threadId)
+  const agent = opts.agent ?? threadRecord?.agent ?? CLAUDE_AGENT
+  const model = opts.model ?? CLAUDE_MODEL
 
   const args: string[] = [
     '-p', prompt,
-    '--agent', CLAUDE_AGENT,
-    '--model', CLAUDE_MODEL,
+    '--agent', agent,
+    '--model', model,
     '--output-format', 'stream-json',
     '--permission-mode', 'bypassPermissions',
     '--allowed-tools', ALLOWED_TOOLS,
@@ -115,6 +148,8 @@ export async function runSession(opts: {
 
   logDispatcher('claude_spawn', {
     threadId,
+    agent,
+    model,
     resuming: !!sessionId,
     sessionId: sessionId ?? 'new',
     promptPreview: prompt.slice(0, 200),
@@ -122,6 +157,15 @@ export async function runSession(opts: {
 
   // Snapshot outbox before run so we can detect new files
   const outboxBefore = snapshotOutbox()
+
+  // Continuation file path — per-thread, passed via env so the agent can
+  // write it from inside its session to signal an autonomous continuation.
+  let continueFile: string | null = null
+  try {
+    continueFile = continuationFilePath(threadId)
+  } catch {
+    // Malformed threadId; continuation disabled for this run.
+  }
 
   const proc: Subprocess = spawn({
     cmd: [CLAUDE_BIN, ...args],
@@ -131,6 +175,13 @@ export async function runSession(opts: {
     env: {
       ...process.env,
       CLAUDE_PROJECT_DIR: PROJECT_DIR,
+      CLAUDE_THREAD_ID: threadId,
+      ...(continueFile ? { CLAUDE_CONTINUE_FILE: continueFile } : {}),
+      // When the thread belongs to a Mode-3 project, surface the project ID
+      // so the PM and any in-session tools can locate the state file.
+      ...(threadRecord?.projectId
+        ? { CLAUDE_PROJECT_ID: threadRecord.projectId }
+        : {}),
     },
   })
 

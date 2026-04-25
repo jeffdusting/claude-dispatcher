@@ -13,6 +13,7 @@
 
 import {
   Client,
+  ChannelType,
   GatewayIntentBits,
   type Message,
   type MessageReaction,
@@ -21,6 +22,8 @@ import {
   type User,
   type PartialMessageReaction,
   type PartialUser,
+  type GuildChannel,
+  type NonThreadGuildBasedChannel,
 } from 'discord.js'
 import { mkdirSync, createWriteStream } from 'fs'
 import { join, basename } from 'path'
@@ -30,10 +33,14 @@ import {
   MAX_CONCURRENT_BUSY,
   PROGRESS_UPDATE_MS,
   ATTACHMENT_DIR,
+  DEFAULT_GROUP_POLICY,
   loadAccess,
+  updateAccess,
+  upsertKnownChannel,
 } from './config.js'
 import {
   getSession,
+  getOrResumeSession,
   createSession,
   markBusy,
   markIdle,
@@ -44,8 +51,19 @@ import {
   drainQueue,
   busyCount,
   getStatusSummary,
+  setPendingContinuation,
+  clearPendingContinuation,
+  listPendingContinuations,
+  type PendingContinuation,
 } from './sessions.js'
 import { runSession, generateTitle, snapshotOutbox, diffOutbox, type OutputFile } from './claude.js'
+import { uploadAndSummarise, isDriveEnabled, renameThreadFolder } from './drive.js'
+import {
+  readAndConsumeContinuation,
+  type ContinuationDescriptor,
+} from './continuation.js'
+import { drainKickoffRequests, type KickoffRequest } from './kickoffInbox.js'
+import { appendProjectLog, getProject } from './projects.js'
 import { chunk } from './chunker.js'
 import { logDispatcher } from './logger.js'
 import { ingestMessage, backfillAll } from './ingest.js'
@@ -164,6 +182,28 @@ async function sendFiles(channel: TextBasedChannel, files: OutputFile[], message
     files: batch.map((f) => ({ attachment: f.path, name: f.name })),
   })
   trackSent(sent.id)
+
+  // Mirror to Google Drive (if configured). Runs after the Discord send so
+  // any upload failure can't delay the user seeing their output.
+  if (isDriveEnabled()) {
+    try {
+      const threadId = channel.id
+      const threadTitle = 'name' in channel ? (channel as { name?: string | null }).name ?? null : null
+      const { summary } = await uploadAndSummarise(
+        files.map((f) => ({ path: f.path, name: f.name })),
+        threadId,
+        threadTitle,
+      )
+      if (summary) {
+        const driveMsg = await channel.send({ content: summary })
+        trackSent(driveMsg.id)
+      }
+    } catch (err) {
+      logDispatcher('drive_mirror_error', {
+        channelId: channel.id, error: String(err).slice(0, 200),
+      })
+    }
+  }
 }
 
 async function editMessage(channel: TextBasedChannel, messageId: string, text: string): Promise<void> {
@@ -284,6 +324,243 @@ function buildPrompt(
   return parts.join('\n')
 }
 
+// ─── Autonomous Continuation ──────────────────────────────────────
+//
+// After each session turn, the agent may have written a continuation
+// descriptor to its CLAUDE_CONTINUE_FILE (see continuation.ts). We read,
+// delete, validate, and schedule a setTimeout that re-invokes the session
+// with the stored prompt after the requested delay.
+//
+// - Pending continuations are persisted in the session registry so they
+//   survive a dispatcher restart (index.ts re-arms timers on boot).
+// - If the session is busy when the timer fires (because the user sent a
+//   new message), the continuation prompt is queued instead of dropped.
+// - A user message supersedes any pending continuation — the timer is
+//   cancelled before the follow-up runs.
+
+// Map of threadId → setTimeout handle, so we can cancel on supersession.
+const activeContinuationTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+/**
+ * Cancel an in-flight continuation timer (called when a user message
+ * arrives for this thread, or when a new continuation supersedes an old
+ * one). Leaves the session registry untouched — clear() that separately.
+ */
+function cancelContinuationTimer(threadId: string): void {
+  const t = activeContinuationTimers.get(threadId)
+  if (!t) return
+  clearTimeout(t)
+  activeContinuationTimers.delete(threadId)
+  logDispatcher('continuation_timer_cancelled', { threadId })
+}
+
+/**
+ * Read the continuation file (if any) and, if valid, schedule the timer.
+ * Must be called after every runSession completion.
+ */
+async function maybeScheduleContinuation(
+  channel: TextBasedChannel,
+  threadId: string,
+): Promise<void> {
+  const desc = readAndConsumeContinuation(threadId)
+  if (!desc) return
+
+  // If there was a previous pending continuation (shouldn't normally
+  // happen — the last turn just wrote a new one), cancel it first.
+  cancelContinuationTimer(threadId)
+
+  const fireAtMs = Date.now() + desc.delaySeconds * 1000
+  const pending: PendingContinuation = {
+    fireAtMs,
+    prompt: desc.prompt,
+    reason: desc.reason,
+    scheduledAtMs: Date.now(),
+  }
+  setPendingContinuation(threadId, pending)
+
+  const when = new Date(fireAtMs).toLocaleTimeString('en-AU', {
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  })
+  await sendToChannel(
+    channel,
+    `⏭ Auto-continue scheduled for ${when} (${Math.round(desc.delaySeconds / 60)} min): ${desc.reason}`,
+  )
+
+  const timer = setTimeout(
+    () => { fireContinuation(channel, threadId).catch((err) => {
+      logDispatcher('continuation_fire_error', { threadId, error: String(err) })
+    }) },
+    desc.delaySeconds * 1000,
+  )
+  activeContinuationTimers.set(threadId, timer)
+  logDispatcher('continuation_scheduled', {
+    threadId,
+    delaySeconds: desc.delaySeconds,
+    reason: desc.reason,
+    fireAtMs,
+  })
+}
+
+/**
+ * Fire a previously-scheduled continuation. Mirrors the follow-up path
+ * but with a synthetic "[auto-continue]" prompt derived from the stored
+ * continuation descriptor.
+ */
+async function fireContinuation(
+  channel: TextBasedChannel,
+  threadId: string,
+): Promise<void> {
+  activeContinuationTimers.delete(threadId)
+  const pending = clearPendingContinuation(threadId)
+  if (!pending) {
+    logDispatcher('continuation_fire_no_pending', { threadId })
+    return
+  }
+
+  const session = getSession(threadId)
+  if (!session) {
+    logDispatcher('continuation_fire_no_session', { threadId })
+    return
+  }
+
+  // If session is busy (a user message beat us to it), queue the prompt
+  if (session.status === 'busy') {
+    const queued = queueMessage(threadId, pending.prompt, '[auto-continue]')
+    if (queued) {
+      logDispatcher('continuation_queued_busy', { threadId, reason: pending.reason })
+    } else {
+      logDispatcher('continuation_queue_full', { threadId, reason: pending.reason })
+    }
+    return
+  }
+
+  // Not busy — run it as a self-invoked follow-up.
+  // CRITICAL: markBusy happens BEFORE the try, but every await that follows
+  // must be inside try/catch so a transient transport failure (e.g. an
+  // Anthropic API URL/port error from startTyping or sendToChannel) cannot
+  // leave the session zombied in 'busy' with no pending continuation. Any
+  // exception must reach markError so the session becomes recoverable.
+  markBusy(threadId)
+
+  let progressMsgId: string | null = null
+  let tracker: ReturnType<typeof createProgressTracker> | null = null
+  const outboxBefore = snapshotOutbox()
+  const prompt = buildContinuationPrompt(pending, threadId)
+
+  try {
+    await startTyping(channel)
+    await sendToChannel(channel, `⏯ Auto-continuing: ${pending.reason}`)
+
+    const sendResult = await sendToChannel(channel, 'Working...')
+    progressMsgId = sendResult[0] ?? null
+    tracker = progressMsgId
+      ? createProgressTracker(channel, progressMsgId)
+      : null
+
+    const result = await runSession({
+      prompt,
+      sessionId: session.sessionId,
+      threadId,
+      onProgress: () => tracker?.tick(),
+    })
+
+    // Handle stale session (resume failed) — retry without resume
+    if (result.resumeFailed) {
+      logDispatcher('continuation_resume_stale', {
+        threadId, oldSessionId: session.sessionId,
+      })
+      clearSessionId(threadId)
+      if (progressMsgId) {
+        await editMessage(channel, progressMsgId, 'Session expired — starting fresh...')
+      }
+      const retry = await runSession({
+        prompt, threadId, onProgress: () => tracker?.tick(),
+      })
+      tracker?.stop()
+      if (progressMsgId) await editMessage(channel, progressMsgId, 'Done.')
+      if (retry.response) await sendToChannel(channel, retry.response)
+      markIdle(threadId, retry.sessionId!)
+      trackTurnCompleted(threadId, retry.cost, retry.durationMs, retry.toolsUsed)
+      recordSuccess()
+    } else {
+      tracker?.stop()
+      if (progressMsgId) await editMessage(channel, progressMsgId, 'Done.')
+      if (result.response) await sendToChannel(channel, result.response)
+      markIdle(threadId, result.sessionId!)
+      trackTurnCompleted(threadId, result.cost, result.durationMs, result.toolsUsed)
+      recordSuccess()
+    }
+
+    // New files in outbox
+    const newFiles = diffOutbox(outboxBefore)
+    if (newFiles.length > 0) {
+      await sendFiles(channel, newFiles, 'Output file(s):')
+    }
+
+    // The continuation may itself have scheduled another continuation
+    await maybeScheduleContinuation(channel, threadId)
+  } catch (err) {
+    tracker?.stop()
+    if (progressMsgId) {
+      try { await editMessage(channel, progressMsgId, 'Failed.') } catch { /* best-effort */ }
+    }
+    markError(threadId, String(err))
+    trackSessionError(threadId)
+    recordError()
+    try {
+      await sendToChannel(channel, `Auto-continue failed: ${String(err).slice(0, 200)}`)
+    } catch {
+      // If Discord itself is unreachable, we cannot notify — the markError
+      // call above is what matters for recovery. Log and move on.
+      logDispatcher('continuation_fire_notify_failed', {
+        threadId, error: String(err).slice(0, 200),
+      })
+    }
+  }
+}
+
+function buildContinuationPrompt(pending: PendingContinuation, threadId: string): string {
+  return [
+    `<channel source="discord" thread_id="${threadId}" user="[auto-continue]">`,
+    pending.prompt,
+    '</channel>',
+    '',
+    'This is an autonomous continuation that you scheduled on a previous turn.',
+    'The dispatcher re-invoked this session as requested. Continue the work.',
+    'If more continuation is needed, write another continuation file via CLAUDE_CONTINUE_FILE.',
+    'If the work is complete, simply respond without writing a continuation file and the loop ends.',
+    'For file outputs, save to the outbox/ directory as usual.',
+  ].join('\n')
+}
+
+/**
+ * Called on Discord boot (from index.ts) and whenever a user-driven turn
+ * supersedes a pending continuation. Re-arms timers from the persisted
+ * session registry, firing immediately for any that are already overdue.
+ */
+export function restoreContinuations(
+  channelResolver: (threadId: string) => Promise<TextBasedChannel | null>,
+): void {
+  const pending = listPendingContinuations()
+  for (const { threadId, cont } of pending) {
+    const remaining = Math.max(0, cont.fireAtMs - Date.now())
+    logDispatcher('continuation_restored', { threadId, remaining, reason: cont.reason })
+
+    const timer = setTimeout(async () => {
+      const channel = await channelResolver(threadId)
+      if (!channel) {
+        logDispatcher('continuation_channel_unresolved', { threadId })
+        clearPendingContinuation(threadId)
+        return
+      }
+      fireContinuation(channel, threadId).catch((err) => {
+        logDispatcher('continuation_fire_error', { threadId, error: String(err) })
+      })
+    }, remaining)
+    activeContinuationTimers.set(threadId, timer)
+  }
+}
+
 // ─── Core Handlers ────────────────────────────────────────────────
 
 async function handleNewTask(msg: Message): Promise<void> {
@@ -372,6 +649,9 @@ async function handleNewTask(msg: Message): Promise<void> {
     trackTurnCompleted(thread.id, result.cost, result.durationMs, result.toolsUsed)
     recordSuccess()
 
+    // Check for autonomous continuation
+    await maybeScheduleContinuation(thread, thread.id)
+
     // Drain any queued follow-ups
     await processQueue(thread)
   } catch (err) {
@@ -394,9 +674,25 @@ async function handleFollowUp(msg: Message): Promise<void> {
   if (!content) return
 
   const threadId = msg.channelId
-  const session = getSession(threadId)
 
-  // No session exists for this thread — start fresh
+  // A user message always supersedes any pending autonomous continuation
+  // for this thread. Cancel the timer and clear the persisted record —
+  // the agent can re-schedule if it still wants to continue after handling
+  // this new input.
+  cancelContinuationTimer(threadId)
+  const superseded = clearPendingContinuation(threadId)
+  if (superseded) {
+    logDispatcher('continuation_superseded_by_user', {
+      threadId, reason: superseded.reason,
+    })
+  }
+
+  // getOrResumeSession re-seeds from the permanent thread→sessionId mapping
+  // when the live entry has been cleaned up. Returns undefined only if the
+  // thread is entirely unknown — in that case we start a fresh conversation.
+  const session = getOrResumeSession(threadId)
+
+  // Thread is unknown — start fresh
   if (!session) {
     createSession(threadId, 'Resumed conversation')
     trackSessionCreated(threadId, 'Resumed conversation')
@@ -425,6 +721,7 @@ async function handleFollowUp(msg: Message): Promise<void> {
       markIdle(threadId, result.sessionId!)
       trackTurnCompleted(threadId, result.cost, result.durationMs, result.toolsUsed)
       recordSuccess()
+      await maybeScheduleContinuation(msg.channel, threadId)
     } catch (err) {
       tracker?.stop()
       if (progressMsgId) await editMessage(msg.channel, progressMsgId, 'Failed.')
@@ -515,6 +812,9 @@ async function handleFollowUp(msg: Message): Promise<void> {
     if (newFiles.length > 0) {
       await sendFiles(msg.channel, newFiles, `Output file(s):`)
     }
+
+    // Check for autonomous continuation
+    await maybeScheduleContinuation(msg.channel, threadId)
 
     // Process any queued messages
     if (msg.channel.isThread()) {
@@ -673,6 +973,101 @@ client.on('error', (err) => {
   logDispatcher('gateway_error', { error: String(err) })
 })
 
+// ─── Auto-Enable New Channels ─────────────────────────────────────
+//
+// When a readable guild channel is created, automatically:
+//   1. Add it to `groups` with DEFAULT_GROUP_POLICY so the dispatcher
+//      responds to allowed users (currently Jeff + Sarah, mention required).
+//   2. Add it to `ingest.channels` so messages are archived.
+//   3. Update the known-channels name cache.
+//
+// `loadAccess()` is called fresh on every inbound message, so this takes
+// effect immediately with no dispatcher restart. Skips non-text channels
+// (categories, voice, stages) and anything already in `groups`.
+
+const AUTO_ENABLE_TYPES: ReadonlySet<number> = new Set([
+  ChannelType.GuildText,
+  ChannelType.GuildAnnouncement,
+  ChannelType.GuildForum,
+])
+
+client.on('channelCreate', (channel: NonThreadGuildBasedChannel) => {
+  try {
+    // Only guild channels of readable types
+    if (!AUTO_ENABLE_TYPES.has(channel.type)) return
+
+    const channelId = channel.id
+    const channelName = (channel as GuildChannel).name ?? '(unnamed)'
+
+    const current = loadAccess()
+    if (channelId in (current.groups ?? {})) {
+      // Already enabled — nothing to do.
+      return
+    }
+
+    updateAccess((cfg) => {
+      cfg.groups[channelId] = { ...DEFAULT_GROUP_POLICY }
+      if (!cfg.ingest) {
+        cfg.ingest = { channels: [] }
+      }
+      const ingestList = cfg.ingest.channels ?? []
+      if (!ingestList.includes(channelId)) {
+        ingestList.push(channelId)
+      }
+      cfg.ingest.channels = ingestList
+    })
+
+    try {
+      upsertKnownChannel(channelId, channelName)
+    } catch (err) {
+      logDispatcher('auto_enable_cache_write_failed', {
+        channelId,
+        error: String(err).slice(0, 200),
+      })
+    }
+
+    logDispatcher('channel_auto_enabled', {
+      channelId,
+      channelName,
+      type: channel.type,
+      guildId: (channel as GuildChannel).guildId,
+      policy: DEFAULT_GROUP_POLICY,
+    })
+  } catch (err) {
+    logDispatcher('channel_auto_enable_failed', {
+      channelId: (channel as GuildChannel)?.id,
+      error: String(err).slice(0, 200),
+    })
+  }
+})
+
+// ─── Thread Rename → Drive Folder Rename ──────────────────────────
+//
+// When a Discord thread is renamed, mirror the rename to its Drive folder
+// so the two stay in sync. If no Drive folder exists for this thread yet,
+// the handler is a no-op — the folder will be created under the new name
+// the first time files upload.
+client.on('threadUpdate', async (oldThread, newThread) => {
+  try {
+    if (!isDriveEnabled()) return
+    if (oldThread.name === newThread.name) return
+    const res = await renameThreadFolder(newThread.id, newThread.name)
+    if (res.renamed) {
+      logDispatcher('thread_rename_synced_to_drive', {
+        threadId: newThread.id,
+        oldName: oldThread.name,
+        newName: newThread.name,
+        folderId: res.folderId,
+      })
+    }
+  } catch (err) {
+    logDispatcher('thread_rename_handler_error', {
+      threadId: newThread.id,
+      error: String(err).slice(0, 200),
+    })
+  }
+})
+
 // ─── Reaction Tracking (Quality Signal) ──────────────────────────
 
 const QUALITY_REACTIONS: Record<string, string> = {
@@ -727,4 +1122,133 @@ export async function connect(): Promise<void> {
 
 export async function disconnect(): Promise<void> {
   await client.destroy()
+}
+
+/**
+ * Resolve a Discord thread by ID. Used by restoreContinuations on boot to
+ * reattach timers to the channels they were scheduled against.
+ */
+export async function resolveThreadChannel(threadId: string): Promise<TextBasedChannel | null> {
+  try {
+    const ch = await client.channels.fetch(threadId)
+    if (!ch) return null
+    if ('send' in ch) return ch as TextBasedChannel
+    return null
+  } catch {
+    return null
+  }
+}
+
+// ─── Project Kickoff Processing ───────────────────────────────────
+//
+// The CoS drops a kickoff request file; we pick it up on an interval and
+// stand up the PM as a live session against the project thread. After this
+// cycle, the thread behaves like any other — follow-ups route through the
+// normal paths, continuations re-arm themselves, etc.
+
+async function handleKickoff(req: KickoffRequest): Promise<void> {
+  const project = getProject(req.projectId)
+  if (!project) {
+    logDispatcher('kickoff_project_missing', { projectId: req.projectId })
+    return
+  }
+
+  const channel = await resolveThreadChannel(req.projectThreadId)
+  if (!channel) {
+    logDispatcher('kickoff_channel_unresolved', {
+      projectId: req.projectId,
+      threadId: req.projectThreadId,
+    })
+    return
+  }
+
+  // At capacity? Defer — re-drop the file so the next tick picks it up.
+  if (busyCount() >= MAX_CONCURRENT_BUSY) {
+    logDispatcher('kickoff_at_capacity', { projectId: req.projectId })
+    // Rewrite the request so the next drain re-picks it up. Cheap.
+    const { dropKickoffRequest } = await import('./kickoffInbox.js')
+    dropKickoffRequest(req)
+    return
+  }
+
+  // Create the live session for this thread. threadSessions already has
+  // the project-manager agent override wired in, so runSession will spawn
+  // the PM automatically.
+  createSession(req.projectThreadId, `Project: ${project.name}`)
+  trackSessionCreated(req.projectThreadId, `Project: ${project.name}`)
+  appendProjectLog(req.projectId, 'PM kickoff starting.')
+
+  await startTyping(channel)
+  const [progressMsgId] = await sendToChannel(channel, 'Standing up project manager...')
+  const tracker = progressMsgId ? createProgressTracker(channel, progressMsgId) : null
+
+  const outboxBefore = snapshotOutbox()
+
+  try {
+    const result = await runSession({
+      prompt: req.kickoffPrompt,
+      threadId: req.projectThreadId,
+      onProgress: () => tracker?.tick(),
+    })
+
+    tracker?.stop()
+    if (progressMsgId) {
+      await editMessage(channel, progressMsgId, 'PM initialised.')
+    }
+
+    if (result.response) {
+      await sendToChannel(channel, result.response)
+    }
+
+    markIdle(req.projectThreadId, result.sessionId!)
+    trackTurnCompleted(
+      req.projectThreadId,
+      result.cost,
+      result.durationMs,
+      result.toolsUsed,
+    )
+    recordSuccess()
+
+    const newFiles = diffOutbox(outboxBefore)
+    if (newFiles.length > 0) {
+      await sendFiles(channel, newFiles, 'Output file(s):')
+    }
+
+    appendProjectLog(req.projectId, 'PM kickoff complete.')
+
+    // PM likely scheduled its own continuation. Pick it up.
+    await maybeScheduleContinuation(channel, req.projectThreadId)
+  } catch (err) {
+    tracker?.stop()
+    if (progressMsgId) {
+      await editMessage(channel, progressMsgId, 'PM kickoff failed.')
+    }
+    markError(req.projectThreadId, String(err))
+    trackSessionError(req.projectThreadId)
+    recordError()
+    appendProjectLog(req.projectId, `PM kickoff failed: ${String(err).slice(0, 200)}`)
+    await sendToChannel(
+      channel,
+      `PM kickoff failed: ${String(err).slice(0, 200)}`,
+    )
+  }
+}
+
+/**
+ * Drain any pending kickoff requests. Called on an interval from index.ts.
+ * Fire-and-forget per request — we don't await all of them in series so a
+ * slow PM doesn't block subsequent kickoffs.
+ */
+export function runKickoffCycle(): void {
+  const pending = drainKickoffRequests()
+  if (pending.length === 0) return
+  logDispatcher('kickoff_cycle', { count: pending.length })
+  for (const req of pending) {
+    handleKickoff(req).catch((err) => {
+      logDispatcher('kickoff_handler_error', {
+        projectId: req.projectId,
+        error: String(err),
+      })
+    })
+  }
 }

@@ -287,6 +287,70 @@ Filters:
 
 The Chief-of-Staff agent should invoke this script via the Bash tool whenever cross-channel context is relevant to the user's request.
 
+## Autonomous continuation
+
+The dispatcher spawns `claude -p` as a one-shot process per Discord message. When an agent finishes its response, the process exits. That means any in-process `ScheduleWakeup` call is a no-op under this deployment — there's no long-running process to wake.
+
+To support multi-turn work without requiring the user to nudge, the dispatcher implements a **continuation file protocol**:
+
+1. Before ending its response, an agent writes a JSON descriptor to `$CLAUDE_CONTINUE_FILE` (set automatically by the dispatcher, unique per thread).
+2. After the turn completes, the dispatcher reads and deletes the file, validates it, and schedules a `setTimeout` for the requested delay.
+3. When the timer fires, the dispatcher re-invokes the same Claude session (via `--resume`) with the stored prompt.
+4. A user message in the thread always supersedes the pending continuation — the timer is cancelled and the user's message runs instead.
+5. Pending continuations are persisted in `state/sessions.json` so they survive a dispatcher restart. On boot, timers are re-armed with remaining time; overdue ones fire immediately.
+
+### Helper script
+
+Agents call the helper from Bash:
+
+```bash
+~/claude-workspace/generic/dispatcher/scripts/continue_when.sh \
+  --delay 900 \
+  --reason "continuing Stage 2 build" \
+  --prompt "Resume work on the shadow-mode review helper..."
+```
+
+### File schema
+
+Written to `state/continuations/<threadId>.json`:
+
+```json
+{
+  "delay_seconds": 900,
+  "reason": "short one-liner for Discord visibility",
+  "prompt": "the prompt the dispatcher will fire back at the session",
+  "thread_id": "1495997222234488862",
+  "created_at": "2026-04-22T11:57:00Z"
+}
+```
+
+### Constraints and safeties
+
+| Concern | Behaviour |
+|---|---|
+| Delay clamping | `[60, 3600]` seconds. Smaller/larger values are clamped. |
+| Per-thread isolation | File path includes threadId; no cross-thread collisions. |
+| User supersession | Any user message cancels the pending timer. |
+| Session busy at fire-time | Continuation prompt is queued behind the current turn. |
+| Restart recovery | Pending continuations are persisted; timers re-arm on boot. |
+| Stale session | If `--resume` fails at fire-time, falls back to a fresh session and carries the prompt forward. |
+| Malformed file | Logged, file deleted, no continuation scheduled. |
+
+### Discord visibility
+
+- `⏭ Auto-continue scheduled for HH:MM (N min): <reason>` — posted after the turn that scheduled it
+- `⏯ Auto-continuing: <reason>` — posted when the timer fires and the session re-runs
+
+### Event logs
+
+| Event | Written to |
+|---|---|
+| `continuation_scheduled` | dispatcher log |
+| `continuation_timer_cancelled` | dispatcher log (user message superseded) |
+| `continuation_superseded_by_user` | dispatcher log |
+| `continuation_restored` | dispatcher log (on boot) |
+| `continuation_fire_error` | dispatcher log |
+
 ## Future work
 
 - **Phase 3 — Permission relay**: In-thread permission buttons instead of `bypassPermissions` mode. Would allow fine-grained approval for destructive operations (Bash, Edit outside outbox/).
