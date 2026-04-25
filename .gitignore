@@ -1,3 +1,16 @@
 node_modules/
 attachments/
 .secrets/
+
+# Runtime artefacts — produced during dispatcher operation, not source.
+# State files committed at initial release (sessions.json, health.json,
+# ingest-cursors.json, known-channels.json) remain tracked as seed values;
+# everything else under state/ is per-run and should not enter git.
+outbox/
+state/dispatcher.pid
+state/channels/
+state/continuations/
+state/projects/
+state/project-kickoff-inbox/
+state/thread_sessions.json
+state/leo-*.json
