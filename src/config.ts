@@ -20,7 +20,14 @@ const DISCORD_STATE_DIR = join(homedir(), '.claude', 'channels', 'discord')
 const ENV_FILE = join(DISCORD_STATE_DIR, '.env')
 const ACCESS_FILE = join(DISCORD_STATE_DIR, 'access.json')
 
-// Load bot token from the existing Discord plugin .env
+// Role must be defined before loadToken() so it can suppress the throw in spare mode.
+export type DispatcherRole = 'primary' | 'spare'
+export const DISPATCHER_ROLE: DispatcherRole =
+  (process.env.DISPATCHER_ROLE as DispatcherRole | undefined) ?? 'primary'
+
+// Load bot token from the existing Discord plugin .env.
+// Spare mode: return '' rather than throw — connect() is never called in spare mode
+// so the empty string is never used.
 function loadToken(): string {
   try {
     const content = readFileSync(ENV_FILE, 'utf8')
@@ -29,6 +36,7 @@ function loadToken(): string {
       if (m) return m[1]!
     }
   } catch {}
+  if (DISPATCHER_ROLE === 'spare') return ''
   throw new Error(`DISCORD_BOT_TOKEN not found in ${ENV_FILE}`)
 }
 
@@ -211,12 +219,14 @@ function loadDriveConfig(): { folderId: string | null } {
 }
 export const DRIVE_FOLDER_ID = loadDriveConfig().folderId
 
-// Dispatcher role — controls whether this instance actively connects to Discord
-// and runs scheduled routines ('primary') or sits idle as a warm spare ('spare').
-// Set via DISPATCHER_ROLE env var. t07 adds the gateway short-circuit that reads this.
-export type DispatcherRole = 'primary' | 'spare'
-export const DISPATCHER_ROLE: DispatcherRole =
-  (process.env.DISPATCHER_ROLE as DispatcherRole | undefined) ?? 'primary'
+// Pause scheduled routines without going full spare-mode. Use on the laptop
+// during cutover so it still answers Discord but cloud owns cron execution.
+// Set DISPATCHER_PAUSE_CRON=1 in the environment.
+export const DISPATCHER_PAUSE_CRON: boolean = process.env.DISPATCHER_PAUSE_CRON === '1'
+
+// Port for the internal health HTTP endpoint. Responds in all modes (including spare)
+// so spares can be monitored with a simple curl localhost:PORT/health.
+export const HEALTHCHECK_PORT: number = parseInt(process.env.HEALTHCHECK_PORT ?? '3000', 10)
 
 // Pre-approved tools (Phase 1: no permission relay, so approve what agents need)
 export const ALLOWED_TOOLS = [

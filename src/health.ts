@@ -291,3 +291,36 @@ export function shutdown(): void {
   saveDailyReport(state.dailyStats)
   persist()
 }
+
+// ─── Health HTTP Server ───────────────────────────────────────────
+
+/**
+ * Start a minimal HTTP server on `port` that returns dispatcher health as JSON.
+ * Runs in all modes (primary and spare) so spares are monitorable via
+ * `curl localhost:PORT/health`. The server is intentionally read-only and
+ * has no auth — it is not exposed publicly (no Fly http_service block).
+ */
+export function startHealthServer(port: number, role: string): void {
+  Bun.serve({
+    port,
+    fetch(req) {
+      const url = new URL(req.url)
+      if (url.pathname !== '/health') {
+        return new Response('Not found', { status: 404 })
+      }
+      const body = JSON.stringify({
+        status: 'ok',
+        role,
+        pid: process.pid,
+        uptimeSeconds: Math.round((Date.now() - state.startedAt) / 1000),
+        memMB: Math.round(process.memoryUsage.rss() / 1024 / 1024),
+        circuitOpen: state.circuitOpen,
+        consecutiveErrors: state.consecutiveErrors,
+      })
+      return new Response(body, {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    },
+  })
+  logDispatcher('health_server_started', { port, role })
+}
