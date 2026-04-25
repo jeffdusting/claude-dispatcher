@@ -18,9 +18,9 @@
  */
 
 import { readFileSync, statSync, createReadStream, readdirSync } from 'fs'
-import { join, relative } from 'path'
+import { join } from 'path'
 import { google, type drive_v3 } from 'googleapis'
-import { DRIVE_FOLDER_ID, DRIVE_SA_KEY_PATH, OUTBOX_DIR } from './config.js'
+import { DRIVE_FOLDER_ID, DRIVE_SA_KEY_PATH } from './config.js'
 import { logDispatcher } from './logger.js'
 
 export interface DriveUploadResult {
@@ -460,7 +460,3 @@ export async function uploadAndSummarise(
   }
 }
 
-// Silence "unused" linter complaints about OUTBOX_DIR — kept imported so
-// future features (e.g. a full outbox sync on startup) can reference it.
-void OUTBOX_DIR
-void relative
