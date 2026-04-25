@@ -211,6 +211,13 @@ function loadDriveConfig(): { folderId: string | null } {
 }
 export const DRIVE_FOLDER_ID = loadDriveConfig().folderId
 
+// Dispatcher role — controls whether this instance actively connects to Discord
+// and runs scheduled routines ('primary') or sits idle as a warm spare ('spare').
+// Set via DISPATCHER_ROLE env var. t07 adds the gateway short-circuit that reads this.
+export type DispatcherRole = 'primary' | 'spare'
+export const DISPATCHER_ROLE: DispatcherRole =
+  (process.env.DISPATCHER_ROLE as DispatcherRole | undefined) ?? 'primary'
+
 // Pre-approved tools (Phase 1: no permission relay, so approve what agents need)
 export const ALLOWED_TOOLS = [
   'Read',
