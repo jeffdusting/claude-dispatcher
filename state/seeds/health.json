@@ -1,0 +1,81 @@
+{
+  "startedAt": 1777071613001,
+  "lastActivityAt": 1777120515384,
+  "consecutiveErrors": 0,
+  "circuitOpen": false,
+  "circuitOpenedAt": null,
+  "dailyStats": {
+    "date": "2026-04-25",
+    "sessionsCreated": 4,
+    "turnsCompleted": 20,
+    "totalCost": 0,
+    "totalErrors": 0,
+    "messagesReceived": 8,
+    "messagesQueued": 1,
+    "sessionsByThread": {
+      "1497409417287700582": {
+        "threadId": "1497409417287700582",
+        "threadName": "Project: Codebase audit and migration plan reconciliation",
+        "turns": 3,
+        "cost": 0,
+        "durationMs": 377423,
+        "toolsUsed": [
+          "Bash",
+          "Read",
+          "Edit"
+        ],
+        "errors": 0,
+        "startedAt": 1777080628110,
+        "lastActiveAt": 1777081443394
+      },
+      "1497412361034666104": {
+        "threadId": "1497412361034666104",
+        "threadName": "Project: Paperclip + dispatcher comprehensive package and cloud-developer migration plan v3",
+        "turns": 4,
+        "cost": 0,
+        "durationMs": 458661,
+        "toolsUsed": [
+          "Bash",
+          "Read",
+          "ToolSearch",
+          "TodoWrite",
+          "Write"
+        ],
+        "errors": 0,
+        "startedAt": 1777081328273,
+        "lastActiveAt": 1777083843851
+      },
+      "1497412726190772274": {
+        "threadId": "1497412726190772274",
+        "threadName": "Project: Comprehensive package + cloud-developer plan",
+        "turns": 3,
+        "cost": 0,
+        "durationMs": 422880,
+        "toolsUsed": [
+          "Bash",
+          "Read"
+        ],
+        "errors": 0,
+        "startedAt": 1777081418375,
+        "lastActiveAt": 1777082523186
+      },
+      "1497575213167153155": {
+        "threadId": "1497575213167153155",
+        "threadName": "Project: Dispatcher cloud migration to Fly.io",
+        "turns": 1,
+        "cost": 0,
+        "durationMs": 354373,
+        "toolsUsed": [
+          "Bash",
+          "Read",
+          "ToolSearch",
+          "TodoWrite",
+          "Write"
+        ],
+        "errors": 0,
+        "startedAt": 1777120159344,
+        "lastActiveAt": 1777120515384
+      }
+    }
+  }
+}

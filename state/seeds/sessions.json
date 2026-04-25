@@ -1,0 +1,139 @@
+[
+  {
+    "threadId": "1495754984246087780",
+    "sessionId": "2d0df701-462e-47cc-b94b-ce20c457c497",
+    "threadName": "Review LEO Advisory Plan & Confirm Required Agents for Delivery",
+    "status": "expired",
+    "createdAt": 1776686190554,
+    "lastActiveAt": 1777072425444,
+    "messageQueue": [],
+    "turnCount": 50,
+    "lastError": "Error: Unable to connect. Is the computer able to access the url?",
+    "pendingContinuation": null
+  },
+  {
+    "threadId": "1496731234070695977",
+    "sessionId": "ade47801-045d-478c-a6a0-906beed2f0f2",
+    "threadName": "I need permission to access your Google Drive folders. Once you grant access, I can read the documen",
+    "status": "expired",
+    "createdAt": 1776918956553,
+    "lastActiveAt": 1777072217640,
+    "messageQueue": [],
+    "turnCount": 29,
+    "lastError": null,
+    "pendingContinuation": null
+  },
+  {
+    "threadId": "1497132481063948451",
+    "sessionId": "4bd8db16-92d9-4b34-bcb9-4a9ff0e3ff37",
+    "threadName": "Develop Automated Business Implementation Plan with Agents",
+    "status": "expired",
+    "createdAt": 1777014609563,
+    "lastActiveAt": 1777080955231,
+    "messageQueue": [],
+    "turnCount": 6,
+    "lastError": null,
+    "pendingContinuation": null
+  },
+  {
+    "threadId": "1497140950277820489",
+    "sessionId": "c34a237c-d376-43ad-bd58-8e68ceac4eb8",
+    "threadName": "Historic Timber Bridges: Adhesive Repair Research & White Paper",
+    "status": "expired",
+    "createdAt": 1777016627804,
+    "lastActiveAt": 1777080863438,
+    "messageQueue": [],
+    "turnCount": 10,
+    "lastError": "Error: Unable to connect. Is the computer able to access the url?",
+    "pendingContinuation": null
+  },
+  {
+    "threadId": "1497371868733243414",
+    "sessionId": "5d1d1b0f-b83d-4525-9990-3b511a5cb18b",
+    "threadName": "Desktop migration plan: new machine, laptop option",
+    "status": "idle",
+    "createdAt": 1777071691784,
+    "lastActiveAt": 1777120237678,
+    "messageQueue": [],
+    "turnCount": 6,
+    "lastError": null,
+    "pendingContinuation": null
+  },
+  {
+    "threadId": "1497372447396204605",
+    "sessionId": "17435f95-5c91-492a-abb5-d12bedaf9152",
+    "threadName": "Project: LEO site content port",
+    "status": "expired",
+    "createdAt": 1777071815803,
+    "lastActiveAt": 1777074857595,
+    "messageQueue": [],
+    "turnCount": 5,
+    "lastError": null,
+    "pendingContinuation": null
+  },
+  {
+    "threadId": "1496380721814835273",
+    "sessionId": "9ccccc52-ae68-44f0-8ced-2fb7dbbd7c05",
+    "threadName": "Enable Tenix and dispatcher functions for cloud operation",
+    "status": "expired",
+    "createdAt": 1776837263320,
+    "lastActiveAt": 1777081341189,
+    "messageQueue": [],
+    "turnCount": 8,
+    "lastError": null,
+    "pendingContinuation": null
+  },
+  {
+    "threadId": "1497409417287700582",
+    "sessionId": "0710e941-2356-48cc-be11-346880176f5b",
+    "threadName": "Project: Codebase audit and migration plan reconciliation",
+    "status": "expired",
+    "createdAt": 1777080628109,
+    "lastActiveAt": 1777081443393,
+    "messageQueue": [],
+    "turnCount": 3,
+    "lastError": null,
+    "pendingContinuation": null
+  },
+  {
+    "threadId": "1497412361034666104",
+    "sessionId": "3c7085c1-3b19-40e4-a292-2dfe1cc841cb",
+    "threadName": "Project: Paperclip + dispatcher comprehensive package and cloud-developer migration plan v3",
+    "status": "expired",
+    "createdAt": 1777081328273,
+    "lastActiveAt": 1777083843849,
+    "messageQueue": [],
+    "turnCount": 4,
+    "lastError": null,
+    "pendingContinuation": null
+  },
+  {
+    "threadId": "1497412726190772274",
+    "sessionId": "1548ec82-8d27-40c7-b194-baaa68a3a795",
+    "threadName": "Project: Comprehensive package + cloud-developer plan",
+    "status": "expired",
+    "createdAt": 1777081418374,
+    "lastActiveAt": 1777082523185,
+    "messageQueue": [],
+    "turnCount": 3,
+    "lastError": null,
+    "pendingContinuation": null
+  },
+  {
+    "threadId": "1497575213167153155",
+    "sessionId": "58d7952f-1d83-4d43-890e-6e2cced8ad6a",
+    "threadName": "Project: Dispatcher cloud migration to Fly.io",
+    "status": "idle",
+    "createdAt": 1777120159343,
+    "lastActiveAt": 1777120515382,
+    "messageQueue": [],
+    "turnCount": 1,
+    "lastError": null,
+    "pendingContinuation": {
+      "fireAtMs": 1777120760385,
+      "prompt": "Continue as Project Manager for p-173549a3 (Dispatcher cloud migration to Fly.io). State file: state/projects/p-173549a3.json. First wave dispatched: t01-state-refactor, t03-1password-brief, t04-warm-spare-design. Next steps: (1) Read the project state file to see worker statuses. (2) For any complete workers, read their result files in state/projects/p-173549a3.workers/<taskId>.json. (3) Dispatch the next runnable wave respecting maxParallelWorkers=3 — t02-containerise and t05-cutover-runbook are independent and ready; t06 unblocks once t03 is complete; t07 unblocks once t04 is complete. (4) Post a status tick to Discord thread 1497575213167153155 summarising progress. (5) If all 9 tasks complete, write the project summary, set status=complete, archive, and stop scheduling continuations. (6) Otherwise schedule another continuation in 4-10 minutes.",
+      "reason": "PM checking first-wave worker results (t01/t03/t04) for project p-173549a3",
+      "scheduledAtMs": 1777120520385
+    }
+  }
+]

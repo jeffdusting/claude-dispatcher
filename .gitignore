@@ -3,9 +3,7 @@ attachments/
 .secrets/
 
 # Runtime artefacts — produced during dispatcher operation, not source.
-# State files committed at initial release (sessions.json, health.json,
-# ingest-cursors.json, known-channels.json) remain tracked as seed values;
-# everything else under state/ is per-run and should not enter git.
+# Seeds live in state/seeds/ (tracked). Runtime state files are ignored here.
 outbox/
 state/dispatcher.pid
 state/channels/
@@ -14,3 +12,7 @@ state/projects/
 state/project-kickoff-inbox/
 state/thread_sessions.json
 state/leo-*.json
+state/sessions.json
+state/health.json
+state/ingest-cursors.json
+state/known-channels.json
