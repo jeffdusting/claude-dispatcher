@@ -7,9 +7,10 @@
  */
 
 import { seedStateIfAbsent } from './bootstrap.js'
+import { syncAgents } from './agentSync.js'
 import { loadSessions, cleanupSessions, shutdown as shutdownSessions } from './sessions.js'
 import { loadThreadSessions, threadSessionCount } from './threadSessions.js'
-import { connect, disconnect, resolveThreadChannel, restoreContinuations, runKickoffCycle } from './gateway.js'
+import { connect, disconnect, resolveThreadChannel, restoreContinuations, runKickoffCycle, notifyIfStaleAgents } from './gateway.js'
 import { shutdown as shutdownHealth, startHealthServer } from './health.js'
 import { sweepRetention, shutdownIngest } from './ingest.js'
 import { listActiveProjects, archiveProject } from './projects.js'
@@ -18,6 +19,13 @@ import { DISPATCHER_ROLE, DISPATCHER_PAUSE_CRON, HEALTHCHECK_PORT } from './conf
 
 // Seed missing runtime state files from state/seeds/ on first boot.
 seedStateIfAbsent()
+
+// Sync agent definitions from the dispatcher repo's canonical .claude/agents/
+// into ~/.claude/agents/ — Claude Code's user-level fallback. Runs before any
+// scheduled work so spawned sessions resolve the latest agent definitions.
+// Failure is non-fatal: state/agents-stale.json is set and an alert is posted
+// to Discord once the gateway connects.
+syncAgents()
 
 logDispatcher('dispatcher_starting', {
   role: DISPATCHER_ROLE,
@@ -55,6 +63,11 @@ if (DISPATCHER_ROLE !== 'spare') {
   // immediately. Must run AFTER the Discord gateway is connected so the
   // channel resolver can fetch thread objects.
   restoreContinuations(resolveThreadChannel)
+
+  // Tier-1 alert if the boot-time agent sync failed. Posts only if
+  // OPS_ALERT_CHANNEL_ID is set; otherwise the stale flag plus log entry
+  // are the durable signal.
+  await notifyIfStaleAgents()
 }
 
 // ─── Scheduled Intervals ─────────────────────────────────────────

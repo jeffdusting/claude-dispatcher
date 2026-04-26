@@ -224,6 +224,12 @@ export const DRIVE_FOLDER_ID = loadDriveConfig().folderId
 // Set DISPATCHER_PAUSE_CRON=1 in the environment.
 export const DISPATCHER_PAUSE_CRON: boolean = process.env.DISPATCHER_PAUSE_CRON === '1'
 
+// Discord channel for tier-1 ops alerts (e.g. agent sync failures at boot).
+// Optional — when unset, alerts are logged but not posted. The full alert
+// layer lands in Phase A.9 Resilience; this constant is the stop-gap.
+export const OPS_ALERT_CHANNEL_ID: string | null =
+  process.env.OPS_ALERT_CHANNEL_ID?.trim() || null
+
 // Port for the internal health HTTP endpoint. Responds in all modes (including spare)
 // so spares can be monitored with a simple curl localhost:PORT/health.
 // Default 8080 matches the Fly.io http_service.internal_port in fly.toml.
