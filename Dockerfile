@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     git \
     gnupg \
+    rsync \
   && rm -rf /var/lib/apt/lists/*
 
 # ── 1Password CLI ─────────────────────────────────────────────────────────────

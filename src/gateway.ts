@@ -34,10 +34,12 @@ import {
   PROGRESS_UPDATE_MS,
   ATTACHMENT_DIR,
   DEFAULT_GROUP_POLICY,
+  OPS_ALERT_CHANNEL_ID,
   loadAccess,
   updateAccess,
   upsertKnownChannel,
 } from './config.js'
+import { readStaleFlag } from './agentSync.js'
 import {
   getSession,
   getOrResumeSession,
@@ -1122,6 +1124,44 @@ export async function connect(): Promise<void> {
 
 export async function disconnect(): Promise<void> {
   await client.destroy()
+}
+
+/**
+ * Tier-1 alert: agent definition sync failed at boot.
+ *
+ * Reads the stale flag set by agentSync.syncAgents() and, if present,
+ * posts a summary to OPS_ALERT_CHANNEL_ID. No-op when the channel is
+ * unset or the flag is absent. Logged either way.
+ *
+ * Precondition: client.login() has resolved (call after connect()).
+ */
+export async function notifyIfStaleAgents(): Promise<void> {
+  const flag = readStaleFlag()
+  if (!flag) return
+
+  logDispatcher('agents_stale_at_boot', { ...flag })
+
+  if (!OPS_ALERT_CHANNEL_ID) {
+    logDispatcher('agents_stale_alert_skipped', { reason: 'OPS_ALERT_CHANNEL_ID not set' })
+    return
+  }
+
+  try {
+    const ch = await client.channels.fetch(OPS_ALERT_CHANNEL_ID)
+    if (!ch || !('send' in ch) || typeof (ch as { send?: unknown }).send !== 'function') {
+      logDispatcher('agents_stale_alert_failed', { reason: 'channel unresolvable or not sendable' })
+      return
+    }
+    const body =
+      `**Tier-1: agent sync failed at boot**\n` +
+      `Reason: ${flag.reason}\n` +
+      `At: ${flag.at}\n` +
+      `Dispatcher continued startup; agent definitions in \`~/.claude/agents/\` may be stale until next boot.`
+    await (ch as { send: (b: string) => Promise<unknown> }).send(body)
+    logDispatcher('agents_stale_alert_sent', { channel: OPS_ALERT_CHANNEL_ID })
+  } catch (err) {
+    logDispatcher('agents_stale_alert_failed', { error: String(err).slice(0, 200) })
+  }
 }
 
 /**
