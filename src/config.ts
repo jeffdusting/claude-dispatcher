@@ -206,34 +206,56 @@ export const CLAUDE_BIN = join(homedir(), '.local', 'bin', 'claude')
 export const CLAUDE_AGENT = 'chief-of-staff'
 export const CLAUDE_MODEL = 'opus'
 
-// Google Drive mirror (optional — disabled if not configured)
+// Google Drive mirror — per-entity routing (Phase A.5.1).
 //
-// When enabled, files written to outbox/ during a session are uploaded to the
-// configured Drive folder in addition to being attached to Discord. The user
-// can then access them from phone/web without needing their desktop.
+// Each entity has its own service account and its own root folder. The
+// dispatcher selects the credential pair at upload time based on the
+// caller's entity context. The default routes CBS Group traffic to the
+// existing single-tenant config (operator's `.secrets/google-drive*` files);
+// WR routes to a separate SA + folder once populated.
 //
-// Auth: service account JSON key. The service account's email must be granted
-// Editor access to DRIVE_FOLDER_ID (share the folder with the SA email via the
-// Drive UI). See outbox/drive-setup.md for the one-time setup.
-export const DRIVE_SA_KEY_PATH = join(
-  homedir(),
-  'claude-workspace',
-  'generic',
-  '.secrets',
-  'google-drive-sa.json',
+// Auth: service account JSON key per entity. Each SA's email must be granted
+// Editor access to its corresponding folder. Until WR is populated, WR
+// routing is silently disabled (no SA key file → uploads skipped).
+//
+// Env-var overrides (set in fly.toml [env] for cloud):
+//   CBS_DRIVE_SA_KEY_PATH, CBS_DRIVE_FOLDER_ID
+//   WR_DRIVE_SA_KEY_PATH,  WR_DRIVE_FOLDER_ID
+//
+// Phase B.4 moves these onto 1Password fetch-at-boot; until then they
+// resolve from the workspace .secrets directory.
+const SECRETS_DIR = join(homedir(), 'claude-workspace', 'generic', '.secrets')
+
+export const CBS_DRIVE_SA_KEY_PATH = envOr(
+  'CBS_DRIVE_SA_KEY_PATH',
+  join(SECRETS_DIR, 'google-drive-sa.json'),
 )
-function loadDriveConfig(): { folderId: string | null } {
+export const WR_DRIVE_SA_KEY_PATH = envOr(
+  'WR_DRIVE_SA_KEY_PATH',
+  join(SECRETS_DIR, 'wr-drive-sa.json'),
+)
+
+function loadFolderIdFromEnvFile(filename: string, key: string): string | null {
   try {
-    const envFile = join(homedir(), 'claude-workspace', 'generic', '.secrets', 'google-drive.env')
-    const content = readFileSync(envFile, 'utf8')
+    const content = readFileSync(join(SECRETS_DIR, filename), 'utf8')
     for (const line of content.split('\n')) {
-      const m = line.match(/^DRIVE_FOLDER_ID=(.+)$/)
-      if (m) return { folderId: m[1]!.trim() }
+      const m = line.match(new RegExp(`^${key}=(.+)$`))
+      if (m) return m[1]!.trim()
     }
   } catch {}
-  return { folderId: null }
+  return null
 }
-export const DRIVE_FOLDER_ID = loadDriveConfig().folderId
+
+export const CBS_DRIVE_FOLDER_ID: string | null =
+  envOr('CBS_DRIVE_FOLDER_ID', '') ||
+  loadFolderIdFromEnvFile('google-drive.env', 'DRIVE_FOLDER_ID') ||
+  loadFolderIdFromEnvFile('cbs-drive.env', 'CBS_DRIVE_FOLDER_ID') ||
+  null
+
+export const WR_DRIVE_FOLDER_ID: string | null =
+  envOr('WR_DRIVE_FOLDER_ID', '') ||
+  loadFolderIdFromEnvFile('wr-drive.env', 'WR_DRIVE_FOLDER_ID') ||
+  null
 
 // Pause scheduled routines without going full spare-mode. Use on the laptop
 // during cutover so it still answers Discord but cloud owns cron execution.

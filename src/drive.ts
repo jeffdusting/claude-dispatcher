@@ -1,26 +1,41 @@
 /**
- * Google Drive mirror for outbox files.
+ * Google Drive mirror for outbox files — multi-account routing (Phase A.5.1).
  *
- * When configured, every file written to outbox/ during a session is also
- * uploaded to a dedicated Drive folder, organised by Discord thread.
- * Returns shareable links that the gateway appends to the Discord message,
- * so Jeff can access output from any device.
+ * Each entity (CBS, WR) has its own service account and its own root folder.
+ * The dispatcher selects the credential pair at upload time based on the
+ * caller's entity context. Per-entity client and folder caches are kept
+ * separate so a CBS upload never accidentally lands in a WR folder.
  *
- * Auth: service account JSON key. The SA email must be granted Editor
- * permission on DRIVE_FOLDER_ID (root folder in Jeff's Drive).
+ * Auth: per-entity service account JSON key. Each SA's email must be granted
+ * Editor permission on the entity's root folder. Missing key file or
+ * missing folder ID → uploads silently skipped for that entity.
  *
- * Config:
- *   DRIVE_FOLDER_ID      (~/claude-workspace/generic/.secrets/google-drive.env)
- *   DRIVE_SA_KEY_PATH    (~/claude-workspace/generic/.secrets/google-drive-sa.json)
+ * Cross-entity audit (Δ DA-013, OD-027 OPT IN): when a worker's entity
+ * (from CLAUDE_ENTITY) differs from the upload entity, a structured audit
+ * event `cross_entity_drive_access` is logged. Phase A.11 wires correlation
+ * IDs into the event for end-to-end reconstruction.
  *
- * If either is missing, uploads are silently skipped — the rest of the
- * dispatcher keeps working unchanged.
+ * Outbox manifest (Δ DA-007): every successful upload writes an entry to
+ * the manifest at OUTBOX_DIR/.outbox-manifest.json so the purge step can
+ * safely delete locally-aged files that are confirmed in Drive.
  */
 
 import { readFileSync, statSync, createReadStream, readdirSync } from 'fs'
-import { join } from 'path'
+import { relative as pathRelative, join } from 'path'
 import { google, type drive_v3 } from 'googleapis'
-import { DRIVE_FOLDER_ID, DRIVE_SA_KEY_PATH } from './config.js'
+import {
+  CBS_DRIVE_FOLDER_ID,
+  CBS_DRIVE_SA_KEY_PATH,
+  OUTBOX_DIR,
+  WR_DRIVE_FOLDER_ID,
+  WR_DRIVE_SA_KEY_PATH,
+} from './config.js'
+import {
+  type Entity,
+  crossEntityAuditEnabled,
+  resolveEntity,
+} from './entity.js'
+import { recordUpload } from './outboxManifest.js'
 import { logDispatcher } from './logger.js'
 
 export interface DriveUploadResult {
@@ -28,52 +43,94 @@ export interface DriveUploadResult {
   webViewLink: string
 }
 
-let cachedClient: drive_v3.Drive | null = null
-// threadId -> folderId cache, so repeated uploads from the same thread
-// all land in the same subfolder without re-querying Drive.
+interface EntityDriveConfig {
+  saKeyPath: string
+  folderId: string | null
+}
+
+const ENTITY_CONFIG: Record<Entity, EntityDriveConfig> = {
+  cbs: { saKeyPath: CBS_DRIVE_SA_KEY_PATH, folderId: CBS_DRIVE_FOLDER_ID },
+  wr: { saKeyPath: WR_DRIVE_SA_KEY_PATH, folderId: WR_DRIVE_FOLDER_ID },
+}
+
+const cachedClients = new Map<Entity, drive_v3.Drive>()
+// `${entity}:${threadId}` -> folderId
 const threadFolderCache = new Map<string, string>()
-// parentId/childName -> childFolderId for subdirectory trees.
+// `${entity}:${parentId}/${childName}` -> childFolderId
 const subfolderCache = new Map<string, string>()
 
-function driveEnabled(): boolean {
-  if (!DRIVE_FOLDER_ID) return false
+function entityKey(entity: Entity, key: string): string {
+  return `${entity}:${key}`
+}
+
+function driveEnabled(entity: Entity): boolean {
+  const cfg = ENTITY_CONFIG[entity]
+  if (!cfg.folderId) return false
   try {
-    statSync(DRIVE_SA_KEY_PATH)
+    statSync(cfg.saKeyPath)
     return true
   } catch {
     return false
   }
 }
 
-function getClient(): drive_v3.Drive | null {
-  if (!driveEnabled()) return null
-  if (cachedClient) return cachedClient
+function getClient(entity: Entity): drive_v3.Drive | null {
+  if (!driveEnabled(entity)) return null
+  const cached = cachedClients.get(entity)
+  if (cached) return cached
 
+  const cfg = ENTITY_CONFIG[entity]
   try {
-    const key = JSON.parse(readFileSync(DRIVE_SA_KEY_PATH, 'utf8'))
+    const key = JSON.parse(readFileSync(cfg.saKeyPath, 'utf8'))
     const auth = new google.auth.JWT({
       email: key.client_email,
       key: key.private_key,
       scopes: ['https://www.googleapis.com/auth/drive.file'],
     })
-    cachedClient = google.drive({ version: 'v3', auth })
-    return cachedClient
+    const client = google.drive({ version: 'v3', auth })
+    cachedClients.set(entity, client)
+    return client
   } catch (err) {
-    logDispatcher('drive_auth_failed', { error: String(err).slice(0, 200) })
+    logDispatcher('drive_auth_failed', {
+      entity,
+      error: String(err).slice(0, 200),
+    })
     return null
   }
 }
 
+/**
+ * Audit a Drive access whose entity differs from the worker's entity (set
+ * by the dispatcher at spawn time via CLAUDE_ENTITY). Phase A.11 will fold
+ * a correlation ID into the event so cross-entity reconstruction is
+ * end-to-end.
+ */
+function auditCrossEntityAccess(opts: {
+  entity: Entity
+  threadId: string
+  context: string
+}): void {
+  if (!crossEntityAuditEnabled()) return
+  const workerEntity = resolveEntity(process.env.CLAUDE_ENTITY)
+  if (workerEntity === opts.entity) return
+  logDispatcher('cross_entity_drive_access', {
+    workerEntity,
+    accessEntity: opts.entity,
+    threadId: opts.threadId,
+    context: opts.context,
+  })
+}
+
 async function findOrCreateFolder(
+  entity: Entity,
   drive: drive_v3.Drive,
   name: string,
   parentId: string,
 ): Promise<string> {
-  const cacheKey = `${parentId}/${name}`
+  const cacheKey = entityKey(entity, `${parentId}/${name}`)
   const cached = subfolderCache.get(cacheKey)
   if (cached) return cached
 
-  // Search first
   const q = `name='${name.replace(/'/g, "\\'")}' and '${parentId}' in parents ` +
     `and mimeType='application/vnd.google-apps.folder' and trashed=false`
   const res = await drive.files.list({
@@ -89,7 +146,6 @@ async function findOrCreateFolder(
     return id
   }
 
-  // Create if not found
   const created = await drive.files.create({
     requestBody: {
       name,
@@ -104,11 +160,6 @@ async function findOrCreateFolder(
   return id
 }
 
-/**
- * Ensure a file/folder has "anyone with the link can view" sharing.
- * Idempotent: safe to call repeatedly; Drive returns the existing permission
- * if one already matches (or a 4xx we silently ignore).
- */
 async function makeAnyoneLinkReadable(
   drive: drive_v3.Drive,
   fileId: string,
@@ -121,70 +172,48 @@ async function makeAnyoneLinkReadable(
       supportsAllDrives: true,
     })
   } catch (err) {
-    // Already-shared folders often return a 400 or no-op; don't fail the upload.
     logDispatcher('drive_share_noop', {
       fileId, error: String(err).slice(0, 150),
     })
   }
 }
 
-/**
- * Get (or create) the Drive folder for a specific Discord thread.
- * Uses threadTitle as the folder name, falling back to the thread ID.
- * Newly created folders are set to "anyone with link can view" so Jeff
- * can share them outside the dispatcher without extra clicks.
- */
 async function getThreadFolder(
+  entity: Entity,
   drive: drive_v3.Drive,
   threadId: string,
   threadTitle: string | null,
 ): Promise<string> {
-  const cached = threadFolderCache.get(threadId)
+  const cacheKey = entityKey(entity, threadId)
+  const cached = threadFolderCache.get(cacheKey)
   if (cached) return cached
 
+  const cfg = ENTITY_CONFIG[entity]
+  const parentId = cfg.folderId!
   const name = sanitizeFolderName(threadTitle ?? threadId)
-  // Check if a folder with this name already exists (e.g. from a previous
-  // dispatcher run with no in-memory cache). If not, create & link-share.
-  const parentId = DRIVE_FOLDER_ID!
-  const cacheKey = `${parentId}/${name}`
-  const existing = subfolderCache.get(cacheKey)
+  const subKey = entityKey(entity, `${parentId}/${name}`)
+  const existing = subfolderCache.get(subKey)
   if (existing) {
-    threadFolderCache.set(threadId, existing)
+    threadFolderCache.set(cacheKey, existing)
     return existing
   }
 
-  const folderId = await findOrCreateFolder(drive, name, parentId)
-  // Set link-sharing on every thread folder we see; the helper no-ops if the
-  // permission is already present.
+  const folderId = await findOrCreateFolder(entity, drive, name, parentId)
   await makeAnyoneLinkReadable(drive, folderId)
-  threadFolderCache.set(threadId, folderId)
+  threadFolderCache.set(cacheKey, folderId)
   return folderId
 }
 
-/**
- * Rename the Drive folder for a given thread when the Discord thread is
- * renamed. Silently no-ops if:
- *   - Drive mirror isn't configured
- *   - We have no cached folder for this thread (e.g. no files ever uploaded)
- *   - The rename call fails (logged)
- *
- * Because thread folders are discovered lazily by name, we ALSO refresh the
- * subfolderCache so the next upload routes to the renamed folder rather than
- * creating a duplicate under the new name.
- */
 export async function renameThreadFolder(
   threadId: string,
   newTitle: string,
+  entity: Entity,
 ): Promise<{ renamed: boolean; folderId?: string }> {
-  const drive = getClient()
+  const drive = getClient(entity)
   if (!drive) return { renamed: false }
 
-  const folderId = threadFolderCache.get(threadId)
-  if (!folderId) {
-    // No folder created yet for this thread; nothing to rename. Future uploads
-    // will create one under the new name.
-    return { renamed: false }
-  }
+  const folderId = threadFolderCache.get(entityKey(entity, threadId))
+  if (!folderId) return { renamed: false }
 
   const newName = sanitizeFolderName(newTitle)
   try {
@@ -193,26 +222,25 @@ export async function renameThreadFolder(
       requestBody: { name: newName },
       supportsAllDrives: true,
     })
-    // Update the subfolder cache: invalidate the old `parentId/oldName` entry
-    // (we don't know the old name without tracking it — just clear any entry
-    // pointing to this folderId) and set the new `parentId/newName` entry.
-    const parentId = DRIVE_FOLDER_ID!
+    const cfg = ENTITY_CONFIG[entity]
+    const parentId = cfg.folderId!
     for (const [k, v] of subfolderCache.entries()) {
-      if (v === folderId) subfolderCache.delete(k)
+      if (v === folderId && k.startsWith(`${entity}:`)) subfolderCache.delete(k)
     }
-    subfolderCache.set(`${parentId}/${newName}`, folderId)
-    logDispatcher('drive_thread_folder_renamed', { threadId, folderId, newName })
+    subfolderCache.set(entityKey(entity, `${parentId}/${newName}`), folderId)
+    logDispatcher('drive_thread_folder_renamed', {
+      entity, threadId, folderId, newName,
+    })
     return { renamed: true, folderId }
   } catch (err) {
     logDispatcher('drive_thread_folder_rename_failed', {
-      threadId, folderId, error: String(err).slice(0, 200),
+      entity, threadId, folderId, error: String(err).slice(0, 200),
     })
     return { renamed: false, folderId }
   }
 }
 
 function sanitizeFolderName(name: string): string {
-  // Drive allows most characters in names, but keep this clean for UI legibility.
   return name.replace(/[\r\n\t]/g, ' ').trim().slice(0, 120) || 'unnamed-thread'
 }
 
@@ -243,7 +271,7 @@ async function uploadOne(
   localPath: string,
   remoteName: string,
   parentId: string,
-): Promise<DriveUploadResult | null> {
+): Promise<{ id: string; result: DriveUploadResult } | null> {
   try {
     const res = await drive.files.create({
       requestBody: {
@@ -258,8 +286,11 @@ async function uploadOne(
       supportsAllDrives: true,
     })
     return {
-      name: res.data.name ?? remoteName,
-      webViewLink: res.data.webViewLink ?? '',
+      id: res.data.id ?? '',
+      result: {
+        name: res.data.name ?? remoteName,
+        webViewLink: res.data.webViewLink ?? '',
+      },
     }
   } catch (err) {
     logDispatcher('drive_upload_failed', {
@@ -270,10 +301,6 @@ async function uploadOne(
   }
 }
 
-/**
- * Recursively collect all files under a directory, returning
- * [absolutePath, pathRelativeToRoot] pairs.
- */
 function walkDir(rootAbs: string, relativeToParent: string = ''): Array<[string, string]> {
   const out: Array<[string, string]> = []
   let entries: string[]
@@ -308,27 +335,28 @@ export interface UploadInput {
 }
 
 /**
- * Upload the given outbox items to Drive, under a thread-specific subfolder.
- *
- * - Regular files upload directly.
- * - Directories are walked; their contents upload into a mirrored subfolder tree.
- * - Silently returns [] if Drive is not configured or auth fails.
+ * Upload outbox items to Drive under the entity's thread-specific subfolder.
+ * Returns successful upload results. Records every success in the outbox
+ * manifest. Audits cross-entity access if the worker's entity differs.
  */
 export async function uploadOutboxFiles(
   items: UploadInput[],
   threadId: string,
   threadTitle: string | null,
+  entity: Entity,
 ): Promise<DriveUploadResult[]> {
-  const drive = getClient()
+  const drive = getClient(entity)
   if (!drive) return []
   if (items.length === 0) return []
 
+  auditCrossEntityAccess({ entity, threadId, context: 'uploadOutboxFiles' })
+
   let threadFolderId: string
   try {
-    threadFolderId = await getThreadFolder(drive, threadId, threadTitle)
+    threadFolderId = await getThreadFolder(entity, drive, threadId, threadTitle)
   } catch (err) {
     logDispatcher('drive_thread_folder_failed', {
-      threadId, error: String(err).slice(0, 200),
+      entity, threadId, error: String(err).slice(0, 200),
     })
     return []
   }
@@ -344,20 +372,18 @@ export async function uploadOutboxFiles(
     }
 
     if (st.isDirectory()) {
-      // Walk the directory; upload each file into a mirrored subfolder tree.
       const files = walkDir(item.path)
       for (const [abs, rel] of files) {
         const parts = rel.split('/').filter(Boolean)
         const fileName = parts.pop()!
-        // Build subfolder path under threadFolderId: <item.name>/<subpath>
         let currentParent = threadFolderId
         const folderParts = [item.name, ...parts]
         for (const segment of folderParts) {
           try {
-            currentParent = await findOrCreateFolder(drive, segment, currentParent)
+            currentParent = await findOrCreateFolder(entity, drive, segment, currentParent)
           } catch (err) {
             logDispatcher('drive_folder_create_failed', {
-              segment, error: String(err).slice(0, 200),
+              entity, segment, error: String(err).slice(0, 200),
             })
             currentParent = ''
             break
@@ -365,15 +391,34 @@ export async function uploadOutboxFiles(
         }
         if (!currentParent) continue
         const uploaded = await uploadOne(drive, abs, fileName, currentParent)
-        if (uploaded) results.push(uploaded)
+        if (uploaded) {
+          results.push(uploaded.result)
+          recordUpload({
+            relativePath: pathRelative(OUTBOX_DIR, abs),
+            absolutePath: abs,
+            entity,
+            driveFileId: uploaded.id,
+            webViewLink: uploaded.result.webViewLink,
+          })
+        }
       }
     } else if (st.isFile()) {
       const uploaded = await uploadOne(drive, item.path, item.name, threadFolderId)
-      if (uploaded) results.push(uploaded)
+      if (uploaded) {
+        results.push(uploaded.result)
+        recordUpload({
+          relativePath: pathRelative(OUTBOX_DIR, item.path),
+          absolutePath: item.path,
+          entity,
+          driveFileId: uploaded.id,
+          webViewLink: uploaded.result.webViewLink,
+        })
+      }
     }
   }
 
   logDispatcher('drive_upload_batch', {
+    entity,
     threadId,
     count: results.length,
     requested: items.length,
@@ -381,13 +426,6 @@ export async function uploadOutboxFiles(
   return results
 }
 
-/**
- * Render a short line summarising uploads, suitable for appending to a
- * Discord message. Returns empty string if no uploads.
- *
- * Example: "📁 Also saved to Drive: <link1>, <link2>"
- * For many files we just show the thread folder link.
- */
 export function formatUploadSummary(
   results: DriveUploadResult[],
   threadFolderUrl: string | null,
@@ -407,56 +445,42 @@ export function formatUploadSummary(
   return `📁 Also saved to Drive: ${links}${extra}`
 }
 
-/** Build a web URL to a Drive folder given its ID. */
 export function folderUrl(folderId: string): string {
   return `https://drive.google.com/drive/folders/${folderId}`
 }
 
-/**
- * Get the thread folder's web URL, creating it if necessary.
- * Used to include a single folder link when many files upload at once.
- * Returns null if Drive is not configured.
- */
 export async function getThreadFolderUrl(
   threadId: string,
   threadTitle: string | null,
+  entity: Entity,
 ): Promise<string | null> {
-  const drive = getClient()
+  const drive = getClient(entity)
   if (!drive) return null
   try {
-    const id = await getThreadFolder(drive, threadId, threadTitle)
+    const id = await getThreadFolder(entity, drive, threadId, threadTitle)
     return folderUrl(id)
   } catch {
     return null
   }
 }
 
-/**
- * True if Drive mirror is configured and ready to upload.
- * Useful for status/diagnostics.
- */
-export function isDriveEnabled(): boolean {
-  return driveEnabled()
+export function isDriveEnabled(entity: Entity): boolean {
+  return driveEnabled(entity)
 }
 
-/**
- * Convenience: given an array of OutputFile-like objects (path + name),
- * upload them as one batch with thread context, returning a Discord-ready
- * summary line and the individual results.
- */
 export async function uploadAndSummarise(
   items: UploadInput[],
   threadId: string,
   threadTitle: string | null,
+  entity: Entity,
 ): Promise<{ summary: string; results: DriveUploadResult[] }> {
-  const results = await uploadOutboxFiles(items, threadId, threadTitle)
+  const results = await uploadOutboxFiles(items, threadId, threadTitle, entity)
   if (results.length === 0) {
     return { summary: '', results: [] }
   }
-  const threadFolderUrl = await getThreadFolderUrl(threadId, threadTitle)
+  const threadFolderUrl = await getThreadFolderUrl(threadId, threadTitle, entity)
   return {
     summary: formatUploadSummary(results, threadFolderUrl),
     results,
   }
 }
-
