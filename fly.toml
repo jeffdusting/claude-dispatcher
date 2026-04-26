@@ -11,8 +11,17 @@ primary_region = "syd"
 [build]
 
 [env]
-  STATE_DIR = "/data/state"
-  NODE_ENV  = "production"
+  # Path overrides (Phase A.4). Each maps to the matching env var consumed
+  # by src/config.ts. Cloud writes runtime artefacts to the /data volume;
+  # source-relative paths (PROJECT_DIR, DISPATCHER_DIR) point at /app where
+  # the dispatcher repo lives in the container.
+  PROJECT_DIR     = "/app"
+  DISPATCHER_DIR  = "/app"
+  STATE_DIR       = "/data/state"
+  LOG_DIR         = "/data/logs"
+  OUTBOX_DIR      = "/data/outbox"
+  ATTACHMENT_DIR  = "/data/attachments"
+  NODE_ENV        = "production"
 
 [http_service]
   internal_port = 8080

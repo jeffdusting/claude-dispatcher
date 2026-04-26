@@ -16,10 +16,11 @@
  */
 
 import { spawnSync } from 'child_process'
-import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync, unlinkSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { DISPATCHER_DIR, STATE_DIR } from './config.js'
+import { writeJsonAtomic } from './atomicWrite.js'
 import { logDispatcher } from './logger.js'
 
 const SOURCE = join(DISPATCHER_DIR, '.claude', 'agents') + '/'
@@ -43,9 +44,10 @@ export function readStaleFlag(): StaleFlag | null {
 }
 
 function writeStale(flag: StaleFlag): void {
+  // Atomic write per D-001 audit (Phase A.4).
   try {
     mkdirSync(STATE_DIR, { recursive: true })
-    writeFileSync(STALE_FLAG, JSON.stringify(flag, null, 2) + '\n', 'utf8')
+    writeJsonAtomic(STALE_FLAG, flag)
   } catch (err) {
     logDispatcher('agents_stale_flag_write_failed', { error: String(err) })
   }

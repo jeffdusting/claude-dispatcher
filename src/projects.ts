@@ -17,8 +17,6 @@
 
 import {
   readFileSync,
-  writeFileSync,
-  renameSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -27,6 +25,7 @@ import {
 import { join } from 'path'
 import { randomBytes } from 'crypto'
 import { STATE_DIR } from './config.js'
+import { writeJsonAtomic } from './atomicWrite.js'
 import { logDispatcher } from './logger.js'
 
 export const PROJECTS_DIR = join(STATE_DIR, 'projects')
@@ -136,9 +135,9 @@ function readProjectFile(path: string): ProjectRecord | null {
 }
 
 function writeProjectFile(path: string, record: ProjectRecord): void {
-  const tmp = `${path}.tmp-${process.pid}`
-  writeFileSync(tmp, JSON.stringify(record, null, 2))
-  renameSync(tmp, path)
+  // Was already atomic; consolidated onto the shared helper for the D-001
+  // audit (Phase A.4).
+  writeJsonAtomic(path, record)
 }
 
 // ──────────────────────────────────────────────────────────────────────

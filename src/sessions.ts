@@ -15,7 +15,8 @@
  * through to the permanent mapping as well.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { readFileSync, mkdirSync } from 'fs'
+import { writeJsonAtomic } from './atomicWrite.js'
 import { join } from 'path'
 import {
   STATE_DIR,
@@ -105,11 +106,11 @@ export function loadSessions(): void {
   }
 }
 
-// Persist to disk
+// Persist to disk. Atomic write per D-001 audit (Phase A.4).
 function persist(): void {
   try {
     const data = Array.from(sessions.values())
-    writeFileSync(SESSIONS_FILE, JSON.stringify(data, null, 2))
+    writeJsonAtomic(SESSIONS_FILE, data)
   } catch (err) {
     process.stderr.write(`sessions: persist failed: ${err}\n`)
   }
