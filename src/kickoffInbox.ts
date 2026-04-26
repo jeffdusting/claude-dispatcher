@@ -23,7 +23,6 @@
 
 import {
   readFileSync,
-  writeFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -31,6 +30,7 @@ import {
 } from 'fs'
 import { join } from 'path'
 import { STATE_DIR } from './config.js'
+import { writeJsonAtomic } from './atomicWrite.js'
 import { logDispatcher } from './logger.js'
 
 export const KICKOFF_INBOX_DIR = join(STATE_DIR, 'project-kickoff-inbox')
@@ -54,7 +54,10 @@ function kickoffPath(projectId: string): string {
 /** Drop a kickoff request for the dispatcher to pick up. */
 export function dropKickoffRequest(req: KickoffRequest): string {
   const path = kickoffPath(req.projectId)
-  writeFileSync(path, JSON.stringify(req, null, 2))
+  // Atomic write per D-001 audit (Phase A.4) — kickoff requests are
+  // consumed by drainKickoffRequests; partial writes would leave the inbox
+  // with an unparseable file the drainer would loop on.
+  writeJsonAtomic(path, req)
   logDispatcher('kickoff_requested', {
     projectId: req.projectId,
     projectThreadId: req.projectThreadId,

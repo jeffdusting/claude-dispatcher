@@ -6,12 +6,27 @@ import { readFileSync, writeFileSync, renameSync, existsSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
-// Paths
-export const PROJECT_DIR = join(homedir(), 'claude-workspace', 'generic')
-export const DISPATCHER_DIR = join(PROJECT_DIR, 'dispatcher')
-export const STATE_DIR = join(DISPATCHER_DIR, 'state')
-export const LOG_DIR = join(PROJECT_DIR, 'logs')
-export const OUTBOX_DIR = join(PROJECT_DIR, 'outbox')
+// ─── Paths ────────────────────────────────────────────────────────────────
+//
+// Each path constant is env-var-driven with a laptop default. Cloud (Fly.io)
+// sets the env explicitly via fly.toml so the dispatcher writes to the
+// mounted /data volume; laptop dev keeps the existing ~/claude-workspace
+// layout. Migration Plan §4.4.1 (Phase A.4).
+//
+// envOr<name>(default) keeps the call site readable and avoids `process.env.X
+// ?? default` everywhere.
+function envOr(name: string, fallback: string): string {
+  const v = process.env[name]
+  return v && v.length > 0 ? v : fallback
+}
+
+const LAPTOP_PROJECT_DIR = join(homedir(), 'claude-workspace', 'generic')
+
+export const PROJECT_DIR = envOr('PROJECT_DIR', LAPTOP_PROJECT_DIR)
+export const DISPATCHER_DIR = envOr('DISPATCHER_DIR', join(PROJECT_DIR, 'dispatcher'))
+export const STATE_DIR = envOr('STATE_DIR', join(DISPATCHER_DIR, 'state'))
+export const LOG_DIR = envOr('LOG_DIR', join(PROJECT_DIR, 'logs'))
+export const OUTBOX_DIR = envOr('OUTBOX_DIR', join(PROJECT_DIR, 'outbox'))
 export const INGEST_DIR = join(STATE_DIR, 'channels')
 export const INGEST_CURSOR_FILE = join(STATE_DIR, 'ingest-cursors.json')
 
@@ -182,8 +197,9 @@ export const THREAD_AUTO_ARCHIVE_MINUTES = 1440               // 24 hours
 // Progress update interval (how often to edit the "Working..." message)
 export const PROGRESS_UPDATE_MS = 8_000
 
-// Attachment download directory
-export const ATTACHMENT_DIR = join(DISPATCHER_DIR, 'attachments')
+// Attachment download directory. Env-overridable (Phase A.4) so cloud can
+// route attachments onto the /data volume.
+export const ATTACHMENT_DIR = envOr('ATTACHMENT_DIR', join(DISPATCHER_DIR, 'attachments'))
 
 // Claude CLI
 export const CLAUDE_BIN = join(homedir(), '.local', 'bin', 'claude')

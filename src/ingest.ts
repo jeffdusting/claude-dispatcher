@@ -22,8 +22,8 @@ import {
   readdirSync,
   rmSync,
   statSync,
-  writeFileSync,
 } from 'fs'
+import { writeJsonAtomic } from './atomicWrite.js'
 import { join } from 'path'
 import type { Client, Message, TextChannel, NewsChannel, ThreadChannel, ForumChannel } from 'discord.js'
 import {
@@ -82,8 +82,9 @@ function loadCursors(): CursorState {
 }
 
 function saveCursors(): void {
+  // Atomic write per D-001 audit (Phase A.4).
   try {
-    writeFileSync(INGEST_CURSOR_FILE, JSON.stringify(cursors, null, 2))
+    writeJsonAtomic(INGEST_CURSOR_FILE, cursors)
   } catch (err) {
     logDispatcher('ingest_cursor_save_failed', { error: String(err) })
   }

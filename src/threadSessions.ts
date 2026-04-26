@@ -14,7 +14,8 @@
  * Persisted to state/thread_sessions.json on every write.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { readFileSync, mkdirSync } from 'fs'
+import { writeJsonAtomic } from './atomicWrite.js'
 import { join } from 'path'
 import { STATE_DIR } from './config.js'
 import { logSession } from './logger.js'
@@ -61,9 +62,10 @@ export function loadThreadSessions(): void {
 }
 
 function persist(): void {
+  // Atomic write per D-001 audit (Phase A.4).
   try {
     const data = Array.from(records.values())
-    writeFileSync(THREAD_SESSIONS_FILE, JSON.stringify(data, null, 2))
+    writeJsonAtomic(THREAD_SESSIONS_FILE, data)
   } catch (err) {
     process.stderr.write(`threadSessions: persist failed: ${err}\n`)
   }

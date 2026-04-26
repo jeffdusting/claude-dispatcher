@@ -35,7 +35,8 @@
  *     so it survives a restart
  */
 
-import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync } from 'fs'
+import { readFileSync, existsSync, unlinkSync, mkdirSync } from 'fs'
+import { writeJsonAtomic } from './atomicWrite.js'
 import { join } from 'path'
 import { STATE_DIR } from './config.js'
 import { logDispatcher } from './logger.js'
@@ -161,7 +162,8 @@ export function readAndConsumeContinuation(threadId: string): ContinuationDescri
  */
 export function writeContinuation(desc: ContinuationDescriptor): string {
   const path = continuationFilePath(desc.threadId)
-  writeFileSync(path, JSON.stringify(desc, null, 2))
+  // Atomic write per D-001 audit (Phase A.4).
+  writeJsonAtomic(path, desc)
   return path
 }
 

@@ -10,7 +10,8 @@
  * Persists daily stats to logs/ for review.
  */
 
-import { writeFileSync, readFileSync, appendFileSync, mkdirSync } from 'fs'
+import { readFileSync, appendFileSync, mkdirSync } from 'fs'
+import { writeJsonAtomic } from './atomicWrite.js'
 import { join } from 'path'
 import { STATE_DIR, LOG_DIR } from './config.js'
 import { logDispatcher } from './logger.js'
@@ -93,8 +94,9 @@ function rollDateIfNeeded(): void {
 }
 
 function persist(): void {
+  // Atomic write per D-001 audit (Phase A.4).
   try {
-    writeFileSync(HEALTH_FILE, JSON.stringify(state, null, 2))
+    writeJsonAtomic(HEALTH_FILE, state)
   } catch {}
 }
 
@@ -229,11 +231,11 @@ export function trackSessionError(threadId: string): void {
 
 // ─── Reporting ────────────────────────────────────────────────────
 
-/** Save a daily stats report to logs/ */
+/** Save a daily stats report to logs/. Atomic write per D-001 audit (Phase A.4). */
 function saveDailyReport(stats: DailyStats): void {
   const file = join(LOG_DIR, `${stats.date}-daily-report.json`)
   try {
-    writeFileSync(file, JSON.stringify(stats, null, 2))
+    writeJsonAtomic(file, stats)
     logDispatcher('daily_report_saved', { date: stats.date, file })
   } catch (err) {
     logDispatcher('daily_report_save_failed', { error: String(err) })
