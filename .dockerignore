@@ -1,14 +1,50 @@
-node_modules/
-.git
+# Build context exclusions for the dispatcher image.
+# Updated under Migration Plan §4.3.3 (Phase A.3) — explicit secrets and
+# build-artefact patterns added alongside the existing runtime-state rules.
 
-# State is a mounted Fly.io volume at /app/state — not part of the image.
-# Exception: state/seeds/ bootstraps runtime state on first boot and must ship.
+# ─── VCS, IDE, OS ────────────────────────────────────────────────────
+.git
+.gitignore
+.github
+.idea
+.vscode
+.DS_Store
+
+# ─── Build dependencies and artefacts ────────────────────────────────
+node_modules/
+dist/
+build/
+.turbo/
+.next/
+*.tsbuildinfo
+
+# ─── Secrets ─────────────────────────────────────────────────────────
+# Defence-in-depth: secrets must never appear in the image. The dispatcher
+# fetches them at runtime via 1Password (see entrypoint.sh / Phase B.4).
+.secrets/
+.env
+.env.*
+*.pem
+*.key
+secrets.env
+secrets.env.*
+
+# ─── Runtime state ───────────────────────────────────────────────────
+# State is a mounted Fly volume — not part of the image.
+# Exception: state/seeds/ bootstraps runtime state on first boot.
 state/
 !state/seeds/
+state/projects/*.workers/
 
-# Runtime artefacts
+# ─── Runtime artefacts ───────────────────────────────────────────────
 outbox/
 logs/
+attachments/
+*.log
+*.pid
 
-# Worker scratch directories (redundant given state/ exclusion, but explicit)
-state/projects/*.workers/
+# ─── Local-only and editor scratch ───────────────────────────────────
+*.swp
+*.swo
+*~
+TASK_LOG.md

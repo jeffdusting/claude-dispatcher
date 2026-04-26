@@ -1,5 +1,9 @@
 # Fly.io deployment — Chief of Staff dispatcher
 # App: cos-dispatcher  |  Region: syd  |  Scale: single persistent machine
+#
+# Updated under Migration Plan §4.3.2 (Phase A.3): performance-2x VM, /data
+# volume mount, /health probe, force_https, wait_timeout 120s. STATE_DIR
+# pointed at /data/state ahead of Phase A.4 config refactor.
 
 app            = "cos-dispatcher"
 primary_region = "syd"
@@ -7,37 +11,42 @@ primary_region = "syd"
 [build]
 
 [env]
-  STATE_DIR = "/app/state"
+  STATE_DIR = "/data/state"
   NODE_ENV  = "production"
 
 [http_service]
   internal_port = 8080
   # Discord bots receive gateway events asynchronously — the machine must be
-  # alive 24/7.  Never auto-stop; always keep at least one machine running.
+  # alive 24/7. Never auto-stop; always keep at least one machine running.
   auto_stop_machines  = false
   auto_start_machines = false
   min_machines_running = 1
-  force_https = false
+  force_https = true
 
   [[http_service.checks]]
     grace_period = "20s"   # allow dispatcher startup before first probe
     interval     = "30s"
     method       = "GET"
-    path         = "/healthz"
+    path         = "/health"
     timeout      = "5s"
 
-# VM: shared-cpu-1x@1GB.  The dispatcher is I/O-bound (Discord + subprocess
-# Claude Code workers) so a shared CPU is fine at this scale.  Each concurrent
-# Claude Code worker is a separate subprocess; if OOM errors appear under load,
-# upgrade to shared-cpu-1x@2gb or performance-1x@2gb.
+# Deploy/release timing. Migration Plan §4.3.2.
+[deploy]
+  wait_timeout = "120s"
+
+# VM: performance-2x — dedicated CPU, 4 GB memory. Migration Plan §4.3.2.
+# Spec rationale: head-room for concurrent Claude Code subprocesses during
+# multi-EA fan-out and KB-heavy workloads.
 [[vm]]
-  size   = "shared-cpu-1x"
-  memory = "1gb"
+  size = "performance-2x"
 
 # Persistent volume for runtime state (sessions, health, ingest JSONL).
+# Mounted at /data per Migration Plan §4.3.2; STATE_DIR env var points at
+# /data/state. Phase A.4 makes the dispatcher honour the env var; until
+# then, code defaults to <DISPATCHER_DIR>/state and this mount is benign.
 # state/seeds/ is baked into the image and bootstraps state on first boot.
 # Grow with `fly volumes extend` if needed — 10 GB should last years at v1 scale.
 [[mounts]]
   source       = "cos_state"
-  destination  = "/app/state"
+  destination  = "/data"
   initial_size = "10gb"
