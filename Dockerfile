@@ -1,10 +1,12 @@
 # syntax=docker/dockerfile:1
-# oven/bun:1 is Debian slim with Bun pre-installed. Using the official Bun
-# image avoids a manual Bun install step and gives us a known-good Bun 1.x.
-# To hard-pin, replace with a digest: oven/bun@sha256:<digest>
-FROM oven/bun:1
+# Bun is hard-pinned per Migration Plan §4.3.1. Bump deliberately when needed —
+# do not float the tag back to oven/bun:1.
+FROM oven/bun:1.3.12
 
 # ── System dependencies ───────────────────────────────────────────────────────
+# tini reaps zombies and forwards signals so bun (PID > 1) gets clean SIGTERM
+# from Fly during deploys/restarts; without it, the dispatcher's child Claude
+# Code subprocesses can be left orphaned on shutdown.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
@@ -13,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     gnupg \
     rsync \
+    tini \
   && rm -rf /var/lib/apt/lists/*
 
 # ── 1Password CLI ─────────────────────────────────────────────────────────────
@@ -74,7 +77,8 @@ COPY --from=kb . /app/knowledge-base/
 EXPOSE 8080
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
-# entrypoint.sh is a stub that runs the dispatcher directly.
-# t06 will add 1Password secret-fetch logic before the exec.
+# tini runs as PID 1 and execs entrypoint.sh, which in turn execs `bun run
+# src/index.ts`. t06 will add 1Password secret-fetch logic before the exec.
 RUN chmod +x /app/entrypoint.sh
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/app/entrypoint.sh"]
