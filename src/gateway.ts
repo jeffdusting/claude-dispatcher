@@ -60,7 +60,8 @@ import {
 } from './sessions.js'
 import { runSession, generateTitle, snapshotOutbox, diffOutbox, type OutputFile } from './claude.js'
 import { uploadAndSummarise, isDriveEnabled, renameThreadFolder } from './drive.js'
-import { DEFAULT_ENTITY, type Entity } from './entity.js'
+import { type Entity } from './entity.js'
+import { resolveEntityForThread } from './entityResolver.js'
 import {
   readAndConsumeContinuation,
   type ContinuationDescriptor,
@@ -187,10 +188,10 @@ async function sendFiles(channel: TextBasedChannel, files: OutputFile[], message
   trackSent(sent.id)
 
   // Mirror to Google Drive (if configured). Runs after the Discord send so
-  // any upload failure can't delay the user seeing their output.
-  // Entity defaults to DEFAULT_ENTITY until Phase A.6 adds entity to the
-  // project descriptor; A.6 derives entity from the project record here.
-  const entity: Entity = DEFAULT_ENTITY
+  // any upload failure can't delay the user seeing their output. Entity is
+  // resolved per-thread from the project descriptor (Phase A.6.6) and
+  // falls back to DEFAULT_ENTITY when the thread isn't bound to a project.
+  const entity: Entity = resolveEntityForThread(channel.id)
   if (isDriveEnabled(entity)) {
     try {
       const threadId = channel.id
@@ -1056,9 +1057,11 @@ client.on('channelCreate', (channel: NonThreadGuildBasedChannel) => {
 // the first time files upload.
 client.on('threadUpdate', async (oldThread, newThread) => {
   try {
-    // Entity defaults to DEFAULT_ENTITY until Phase A.6 / Phase H map
-    // threads to entities.
-    const entity: Entity = DEFAULT_ENTITY
+    // Entity is resolved per-thread from the project descriptor (Phase
+    // A.6.6); when the thread is not bound to a project, the resolver
+    // returns DEFAULT_ENTITY. Phase H may add a channel-to-entity layer
+    // for non-project threads.
+    const entity: Entity = resolveEntityForThread(newThread.id)
     if (!isDriveEnabled(entity)) return
     if (oldThread.name === newThread.name) return
     const res = await renameThreadFolder(newThread.id, newThread.name, entity)

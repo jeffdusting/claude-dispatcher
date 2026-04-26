@@ -16,16 +16,17 @@
  */
 
 import {
-  readFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
   unlinkSync,
 } from 'fs'
 import { join } from 'path'
-import { randomBytes } from 'crypto'
+import { randomBytes, randomUUID } from 'crypto'
 import { STATE_DIR } from './config.js'
 import { writeJsonAtomic } from './atomicWrite.js'
+import { readJsonTolerant } from './readJsonTolerant.js'
+import { DEFAULT_ENTITY, type Entity, isEntity } from './entity.js'
 import { logDispatcher } from './logger.js'
 
 export const PROJECTS_DIR = join(STATE_DIR, 'projects')
@@ -73,6 +74,14 @@ export interface ProjectArtifact {
   addedAt: number
 }
 
+/**
+ * On-disk schema version for ProjectRecord. v1 had no `entity`,
+ * `paperclipTaskIds`, `correlationId`, or `schemaVersion` fields. v2 (Phase
+ * A.6) adds all four. Readers tolerate v1 via `normaliseProjectRecord`; the
+ * `scripts/backfill-project-descriptors.ts` migrates v1 records on disk.
+ */
+export const PROJECT_SCHEMA_VERSION = 2 as const
+
 export interface ProjectRecord {
   id: string
   name: string
@@ -99,6 +108,29 @@ export interface ProjectRecord {
   summary?: string
   /** Plain-text notes the PM appends as it works. Bounded to last 50. */
   log: Array<{ at: number; note: string }>
+  /**
+   * Entity that owns this project — `'cbs'` (CBS Group) or `'wr'` (WaterRoads).
+   * Determines per-entity Drive routing (Phase A.5.1) and KB credential
+   * scoping (Phase A.5.3) for any worker spawned against this project's
+   * thread. Required from schemaVersion 2 onward.
+   */
+  entity: Entity
+  /**
+   * Paperclip task IDs linked to this project. Populated by the dispatcher
+   * when project work is mirrored into Paperclip and by the PM when it
+   * spawns or links Paperclip-tracked sub-tasks. Empty array if the project
+   * has no Paperclip linkage.
+   */
+  paperclipTaskIds: string[]
+  /**
+   * Correlation ID for end-to-end audit reconstruction (Δ DA-013, OD-027 OPT
+   * IN). Generated at project creation; propagated through dispatcher logs,
+   * worker spawn env, outbox file headers, Drive metadata, and KB entries.
+   * Phase A.11 wires the propagation; A.6 establishes the field.
+   */
+  correlationId: string
+  /** On-disk schema version. Current writers always set this to 2. */
+  schemaVersion: number
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -125,12 +157,54 @@ export function archivedProjectPath(id: string): string {
 // ──────────────────────────────────────────────────────────────────────
 
 function readProjectFile(path: string): ProjectRecord | null {
-  if (!existsSync(path)) return null
-  try {
-    return JSON.parse(readFileSync(path, 'utf8')) as ProjectRecord
-  } catch (err) {
-    logDispatcher('project_read_failed', { path, error: String(err) })
+  const result = readJsonTolerant<ProjectRecord>(path, normaliseProjectRecord)
+  if (result.reason === 'missing') return null
+  if (!result.record) {
+    logDispatcher('project_read_failed', {
+      path,
+      reason: result.reason,
+      error: result.error ? String(result.error) : undefined,
+    })
     return null
+  }
+  return result.record
+}
+
+/**
+ * Version-tolerant reader (Δ DA-001, Phase A.6.5).
+ *
+ * Records written by the v1 codebase lack `entity`, `paperclipTaskIds`,
+ * `correlationId`, and `schemaVersion`. Readers should not crash; they fill
+ * in defaults so callers always see a v2-shaped record. Disk is untouched —
+ * the backfill script (`scripts/backfill-project-descriptors.ts`) is the
+ * only place that rewrites records to bump the on-disk version.
+ *
+ * Returns null if the input cannot be coerced (missing required v1 fields
+ * such as `id`, `name`, or `tasks`); the caller logs and skips.
+ */
+export function normaliseProjectRecord(
+  raw: Record<string, unknown>,
+): ProjectRecord | null {
+  if (typeof raw.id !== 'string' || typeof raw.name !== 'string') return null
+  if (!Array.isArray(raw.tasks)) return null
+
+  const entity = isEntity(raw.entity) ? raw.entity : DEFAULT_ENTITY
+  const paperclipTaskIds = Array.isArray(raw.paperclipTaskIds)
+    ? raw.paperclipTaskIds.filter((x): x is string => typeof x === 'string')
+    : []
+  const correlationId =
+    typeof raw.correlationId === 'string' && raw.correlationId.length > 0
+      ? raw.correlationId
+      : `legacy-${raw.id}`
+  const schemaVersion =
+    typeof raw.schemaVersion === 'number' ? raw.schemaVersion : 1
+
+  return {
+    ...(raw as unknown as ProjectRecord),
+    entity,
+    paperclipTaskIds,
+    correlationId,
+    schemaVersion,
   }
 }
 
@@ -154,6 +228,10 @@ export function createProject(opts: {
   brief: string
   originThreadId: string
   maxParallelWorkers?: number
+  /** Entity that owns this project. Defaults to DEFAULT_ENTITY (cbs) per
+   *  Phase A.5; callers in Phase H may pass an explicit entity once the
+   *  channel-to-entity map exists. */
+  entity?: Entity
 }): ProjectRecord {
   const now = Date.now()
   const record: ProjectRecord = {
@@ -169,9 +247,18 @@ export function createProject(opts: {
     tasks: [],
     artifacts: [],
     log: [{ at: now, note: 'Project created.' }],
+    entity: opts.entity ?? DEFAULT_ENTITY,
+    paperclipTaskIds: [],
+    correlationId: randomUUID(),
+    schemaVersion: PROJECT_SCHEMA_VERSION,
   }
   writeProjectFile(projectPath(record.id), record)
-  logDispatcher('project_created', { id: record.id, name: record.name })
+  logDispatcher('project_created', {
+    id: record.id,
+    name: record.name,
+    entity: record.entity,
+    correlationId: record.correlationId,
+  })
   return record
 }
 
