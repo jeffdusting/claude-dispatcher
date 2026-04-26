@@ -18,6 +18,12 @@ import {
 } from './config.js'
 import { continuationFilePath } from './continuation.js'
 import { getThreadRecord } from './threadSessions.js'
+import {
+  ALL_SUPABASE_ENV_NAMES,
+  DEFAULT_ENTITY,
+  type Entity,
+  SUPABASE_ENV_NAMES,
+} from './entity.js'
 import { logDispatcher } from './logger.js'
 
 export interface ClaudeMessage {
@@ -120,6 +126,12 @@ export async function runSession(opts: {
   agent?: string
   /** Claude model to run. Defaults to CLAUDE_MODEL. */
   model?: string
+  /**
+   * Entity context for credential scoping (Phase A.5.3, Δ DA-005). Determines
+   * which Supabase service-role key the worker sees. Defaults to DEFAULT_ENTITY
+   * until Phase A.6 adds entity to the project descriptor.
+   */
+  entity?: Entity
   onProgress?: (text: string) => void
 }): Promise<SessionResult> {
   const { prompt, sessionId, threadId, onProgress } = opts
@@ -127,6 +139,7 @@ export async function runSession(opts: {
   const threadRecord = getThreadRecord(threadId)
   const agent = opts.agent ?? threadRecord?.agent ?? CLAUDE_AGENT
   const model = opts.model ?? CLAUDE_MODEL
+  const entity: Entity = opts.entity ?? DEFAULT_ENTITY
 
   const args: string[] = [
     '-p', prompt,
@@ -150,6 +163,7 @@ export async function runSession(opts: {
     threadId,
     agent,
     model,
+    entity,
     resuming: !!sessionId,
     sessionId: sessionId ?? 'new',
     promptPreview: prompt.slice(0, 200),
@@ -172,17 +186,17 @@ export async function runSession(opts: {
     cwd: PROJECT_DIR,
     stdout: 'pipe',
     stderr: 'pipe',
-    env: {
-      ...process.env,
+    env: scopeWorkerEnv(entity, {
       CLAUDE_PROJECT_DIR: PROJECT_DIR,
       CLAUDE_THREAD_ID: threadId,
+      CLAUDE_ENTITY: entity,
       ...(continueFile ? { CLAUDE_CONTINUE_FILE: continueFile } : {}),
       // When the thread belongs to a Mode-3 project, surface the project ID
       // so the PM and any in-session tools can locate the state file.
       ...(threadRecord?.projectId
         ? { CLAUDE_PROJECT_ID: threadRecord.projectId }
         : {}),
-    },
+    }),
   })
 
   let responseText = ''
@@ -293,6 +307,40 @@ export async function runSession(opts: {
     durationMs,
     toolsUsed: uniqueTools,
   }
+}
+
+/**
+ * Build the worker process environment with KB credentials scoped to the
+ * worker's entity (Phase A.5.3, Δ DA-005). The worker sees:
+ *   - The full parent environment, EXCEPT
+ *   - Cross-entity Supabase variables are removed.
+ *   - Entity-scoped Supabase variables are passed through under their
+ *     entity-specific names so the supabase-query skill resolves them per
+ *     OD-031 §5 (e.g. CBS_SUPABASE_SERVICE_ROLE_KEY for entity=cbs).
+ *
+ * The skill itself is responsible for selecting the variable name from the
+ * `entity` parameter; the dispatcher's job is the credential reduction.
+ */
+function scopeWorkerEnv(
+  entity: Entity,
+  extras: Record<string, string>,
+): Record<string, string> {
+  const allow = new Set<string>([
+    SUPABASE_ENV_NAMES[entity].url,
+    SUPABASE_ENV_NAMES[entity].serviceRoleKey,
+  ])
+
+  const env: Record<string, string> = {}
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v === undefined) continue
+    // Drop any cross-entity Supabase var that is not the entity's own.
+    if (ALL_SUPABASE_ENV_NAMES.includes(k) && !allow.has(k)) continue
+    env[k] = v
+  }
+  for (const [k, v] of Object.entries(extras)) {
+    env[k] = v
+  }
+  return env
 }
 
 /** Check if stderr indicates a failed resume (stale/missing session). */

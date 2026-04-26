@@ -60,6 +60,7 @@ import {
 } from './sessions.js'
 import { runSession, generateTitle, snapshotOutbox, diffOutbox, type OutputFile } from './claude.js'
 import { uploadAndSummarise, isDriveEnabled, renameThreadFolder } from './drive.js'
+import { DEFAULT_ENTITY, type Entity } from './entity.js'
 import {
   readAndConsumeContinuation,
   type ContinuationDescriptor,
@@ -187,7 +188,10 @@ async function sendFiles(channel: TextBasedChannel, files: OutputFile[], message
 
   // Mirror to Google Drive (if configured). Runs after the Discord send so
   // any upload failure can't delay the user seeing their output.
-  if (isDriveEnabled()) {
+  // Entity defaults to DEFAULT_ENTITY until Phase A.6 adds entity to the
+  // project descriptor; A.6 derives entity from the project record here.
+  const entity: Entity = DEFAULT_ENTITY
+  if (isDriveEnabled(entity)) {
     try {
       const threadId = channel.id
       const threadTitle = 'name' in channel ? (channel as { name?: string | null }).name ?? null : null
@@ -195,6 +199,7 @@ async function sendFiles(channel: TextBasedChannel, files: OutputFile[], message
         files.map((f) => ({ path: f.path, name: f.name })),
         threadId,
         threadTitle,
+        entity,
       )
       if (summary) {
         const driveMsg = await channel.send({ content: summary })
@@ -1051,9 +1056,12 @@ client.on('channelCreate', (channel: NonThreadGuildBasedChannel) => {
 // the first time files upload.
 client.on('threadUpdate', async (oldThread, newThread) => {
   try {
-    if (!isDriveEnabled()) return
+    // Entity defaults to DEFAULT_ENTITY until Phase A.6 / Phase H map
+    // threads to entities.
+    const entity: Entity = DEFAULT_ENTITY
+    if (!isDriveEnabled(entity)) return
     if (oldThread.name === newThread.name) return
-    const res = await renameThreadFolder(newThread.id, newThread.name)
+    const res = await renameThreadFolder(newThread.id, newThread.name, entity)
     if (res.renamed) {
       logDispatcher('thread_rename_synced_to_drive', {
         threadId: newThread.id,
