@@ -296,35 +296,40 @@ export function shutdown(): void {
 
 // ─── Health HTTP Server ───────────────────────────────────────────
 
+// Liveness flag — flipped by markShuttingDown() so /health returns 503 once
+// the graceful-shutdown drain begins. Phase A.9 will extend the drain logic
+// (worker registry; 90s window; partial-failure recovery); A.7 only wires the
+// probe contract so an orchestrator can stop routing traffic immediately.
+let shuttingDown = false
+
 /**
- * Start a minimal HTTP server on `port` that returns dispatcher health as JSON.
- * Runs in all modes (primary and spare) so spares are monitorable via
- * `curl localhost:PORT/health`. The server is intentionally read-only and
- * has no auth — it is not exposed publicly (no Fly http_service block).
+ * Mark the dispatcher as shutting down. Subsequent /health responses return
+ * 503 with an empty body. Idempotent.
+ */
+export function markShuttingDown(): void {
+  shuttingDown = true
+}
+
+/**
+ * Start the public HTTP server on `port`. A.7 (Migration Plan §4.7.1, Δ S-008,
+ * architecture v2.1 §3.1) requires `/health` to return liveness only:
+ *   - 200 with body `ok` when alive and not draining.
+ *   - 503 with no body once shutdown has been signalled.
+ * Any other path returns 404 — closes the S-008 information-leak surface
+ * (no role, pid, memory, or circuit state in the public response).
+ *
+ * `/health/integrations` is owned by Phase A.9 and is not served here.
  */
 export function startHealthServer(port: number, role: string): void {
   Bun.serve({
     port,
     fetch(req) {
       const url = new URL(req.url)
-      // /healthz — minimal Fly.io probe response
-      if (url.pathname === '/healthz') {
-        return Response.json({
-          status: 'ok',
-          uptime: Math.round((Date.now() - state.startedAt) / 1000),
-          version: '0.1.0',
-        })
-      }
-      // /health — richer internal diagnostic response
       if (url.pathname === '/health') {
-        return Response.json({
-          status: 'ok',
-          role,
-          pid: process.pid,
-          uptimeSeconds: Math.round((Date.now() - state.startedAt) / 1000),
-          memMB: Math.round(process.memoryUsage.rss() / 1024 / 1024),
-          circuitOpen: state.circuitOpen,
-          consecutiveErrors: state.consecutiveErrors,
+        if (shuttingDown) return new Response(null, { status: 503 })
+        return new Response('ok', {
+          status: 200,
+          headers: { 'content-type': 'text/plain; charset=utf-8' },
         })
       }
       return new Response('Not found', { status: 404 })
