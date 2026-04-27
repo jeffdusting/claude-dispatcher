@@ -36,6 +36,7 @@ import {
   resolveEntity,
 } from './entity.js'
 import { recordUpload } from './outboxManifest.js'
+import { withUpstream, CircuitOpenError } from './circuitBreaker.js'
 import { logDispatcher } from './logger.js'
 
 export interface DriveUploadResult {
@@ -133,20 +134,20 @@ async function findOrCreateFolder(
 
   const q = `name='${name.replace(/'/g, "\\'")}' and '${parentId}' in parents ` +
     `and mimeType='application/vnd.google-apps.folder' and trashed=false`
-  const res = await drive.files.list({
+  const res = await withUpstream('drive', () => drive.files.list({
     q,
     fields: 'files(id,name)',
     pageSize: 1,
     supportsAllDrives: true,
     includeItemsFromAllDrives: true,
-  })
+  }), { operation: 'files.list' })
   if (res.data.files && res.data.files.length > 0) {
     const id = res.data.files[0]!.id!
     subfolderCache.set(cacheKey, id)
     return id
   }
 
-  const created = await drive.files.create({
+  const created = await withUpstream('drive', () => drive.files.create({
     requestBody: {
       name,
       mimeType: 'application/vnd.google-apps.folder',
@@ -154,7 +155,7 @@ async function findOrCreateFolder(
     },
     fields: 'id',
     supportsAllDrives: true,
-  })
+  }), { operation: 'files.create.folder' })
   const id = created.data.id!
   subfolderCache.set(cacheKey, id)
   return id
@@ -165,13 +166,19 @@ async function makeAnyoneLinkReadable(
   fileId: string,
 ): Promise<void> {
   try {
-    await drive.permissions.create({
+    await withUpstream('drive', () => drive.permissions.create({
       fileId,
       requestBody: { role: 'reader', type: 'anyone' },
       sendNotificationEmail: false,
       supportsAllDrives: true,
-    })
+    }), { operation: 'permissions.create' })
   } catch (err) {
+    if (err instanceof CircuitOpenError) {
+      logDispatcher('drive_share_breaker_open', {
+        fileId, retryAfterMs: err.retryAfterMs,
+      })
+      return
+    }
     logDispatcher('drive_share_noop', {
       fileId, error: String(err).slice(0, 150),
     })
@@ -217,11 +224,11 @@ export async function renameThreadFolder(
 
   const newName = sanitizeFolderName(newTitle)
   try {
-    await drive.files.update({
+    await withUpstream('drive', () => drive.files.update({
       fileId: folderId,
       requestBody: { name: newName },
       supportsAllDrives: true,
-    })
+    }), { operation: 'files.update.rename' })
     const cfg = ENTITY_CONFIG[entity]
     const parentId = cfg.folderId!
     for (const [k, v] of subfolderCache.entries()) {
@@ -273,7 +280,11 @@ async function uploadOne(
   parentId: string,
 ): Promise<{ id: string; result: DriveUploadResult } | null> {
   try {
-    const res = await drive.files.create({
+    // The retry helper re-invokes `fn` on transient failure. Each attempt
+    // needs its own read stream — the body is consumed on attempt 1, so
+    // attempt 2 must reopen the file. Hence the stream construction inside
+    // the closure rather than once outside.
+    const res = await withUpstream('drive', () => drive.files.create({
       requestBody: {
         name: remoteName,
         parents: [parentId],
@@ -284,7 +295,7 @@ async function uploadOne(
       },
       fields: 'id,name,webViewLink',
       supportsAllDrives: true,
-    })
+    }), { operation: 'files.create.upload' })
     return {
       id: res.data.id ?? '',
       result: {
@@ -293,6 +304,12 @@ async function uploadOne(
       },
     }
   } catch (err) {
+    if (err instanceof CircuitOpenError) {
+      logDispatcher('drive_upload_breaker_open', {
+        path: localPath, retryAfterMs: err.retryAfterMs,
+      })
+      return null
+    }
     logDispatcher('drive_upload_failed', {
       path: localPath,
       error: String(err).slice(0, 300),

@@ -186,8 +186,10 @@ export const INGEST_DEFAULTS = {
   backfillLimit: 500,
 } as const
 
-// Session limits
-export const MAX_CONCURRENT_BUSY = 5
+// Session limits.
+// `MAX_CONCURRENT_BUSY` was retired in Phase A.9.5 (Δ D-014); the
+// concurrent-worker cap is owned by `concurrencyGate.ts` and configured via
+// the `DISPATCHER_MAX_CONCURRENT_WORKERS` env var (default 5).
 export const MAX_TRACKED_SESSIONS = 50
 export const MAX_QUEUED_MESSAGES = 10
 export const SESSION_IDLE_TIMEOUT_MS = 4 * 60 * 60 * 1000   // 4 hours
