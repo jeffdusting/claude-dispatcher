@@ -400,7 +400,7 @@ export async function runSession(opts: {
  * The skill itself is responsible for selecting the variable name from the
  * `entity` parameter; the dispatcher's job is the credential reduction.
  */
-function scopeWorkerEnv(
+export function scopeWorkerEnv(
   entity: Entity,
   extras: Record<string, string>,
 ): Record<string, string> {

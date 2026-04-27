@@ -1,14 +1,18 @@
-# Dispatcher CI — Migration Plan §4.3.4 (Phase A.3).
+# Dispatcher CI — Migration Plan §4.3.4 (Phase A.3) + §4.10.3 (Phase A.10).
 #
-# This workflow is the PR gate. Lint runs strict; the test job is a
-# placeholder that Phase A.10 (test scaffolding) will populate. Until A.10
-# lands, the test step is a no-op that reports the gap so CI is honest about
-# what's covered.
+# This workflow is the PR gate. Two jobs:
+#  - `lint`: typecheck (advisory until A.10 part 2 cleans pre-existing errors).
+#  - `test`: bun test runner over the suite under tests/. Strict — failures
+#    block merge.
 #
-# Typecheck note: the dispatcher source has 18 pre-existing TypeScript errors
-# inherited from earlier work. Until Phase A.10 cleans them up the typecheck
-# step is non-blocking (continue-on-error). Phase A.10 flips this back to
-# strict; do not relax it elsewhere.
+# Typecheck note: the dispatcher source has 20 pre-existing TypeScript errors
+# inherited from earlier work. Until Phase A.10 part 2 cleans them up the
+# typecheck step is non-blocking (continue-on-error). A.10 part 2 flips this
+# back to strict; do not relax it elsewhere.
+#
+# DISPATCHER_TEST_MODE=1 is set on the test job so config.ts gates every
+# on-disk secret fallback (Δ OD-034) — no test path can accidentally read
+# .secrets/* or send a real Twilio SMS.
 
 name: CI
 
@@ -45,7 +49,7 @@ jobs:
           echo "::warning::tsc reported errors. CI is advisory until Phase A.10 cleans them up. Do not let new errors slip in."
 
   test:
-    name: Test (placeholder)
+    name: Test
     runs-on: ubuntu-latest
     needs: lint
     steps:
@@ -60,8 +64,7 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Test scaffolding pending
-        run: |
-          echo "Phase A.10 will deliver the test scaffolding."
-          echo "Until then this step is a no-op gate so the workflow shape"
-          echo "is in place and PRs surface the right job names."
+      - name: Run bun test suite
+        env:
+          DISPATCHER_TEST_MODE: '1'
+        run: bun test
