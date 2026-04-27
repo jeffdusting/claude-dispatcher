@@ -20,10 +20,10 @@ import { continuationFilePath } from './continuation.js'
 import { getThreadRecord } from './threadSessions.js'
 import {
   ALL_SUPABASE_ENV_NAMES,
-  DEFAULT_ENTITY,
   type Entity,
   SUPABASE_ENV_NAMES,
 } from './entity.js'
+import { resolveEntityForThread } from './entityResolver.js'
 import { logDispatcher } from './logger.js'
 
 export interface ClaudeMessage {
@@ -128,8 +128,10 @@ export async function runSession(opts: {
   model?: string
   /**
    * Entity context for credential scoping (Phase A.5.3, Δ DA-005). Determines
-   * which Supabase service-role key the worker sees. Defaults to DEFAULT_ENTITY
-   * until Phase A.6 adds entity to the project descriptor.
+   * which Supabase service-role key the worker sees. If unset, the entity
+   * is resolved from the thread's project descriptor (Phase A.6.6) — this
+   * is the path most callers exercise. DEFAULT_ENTITY remains the final
+   * fallback when no project is associated with the thread.
    */
   entity?: Entity
   onProgress?: (text: string) => void
@@ -139,7 +141,7 @@ export async function runSession(opts: {
   const threadRecord = getThreadRecord(threadId)
   const agent = opts.agent ?? threadRecord?.agent ?? CLAUDE_AGENT
   const model = opts.model ?? CLAUDE_MODEL
-  const entity: Entity = opts.entity ?? DEFAULT_ENTITY
+  const entity: Entity = opts.entity ?? resolveEntityForThread(threadId)
 
   const args: string[] = [
     '-p', prompt,

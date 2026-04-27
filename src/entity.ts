@@ -1,16 +1,12 @@
 /**
  * Entity context — CBS Group vs WaterRoads.
  *
- * Phase A.5 introduces explicit entity routing for Drive uploads, KB
- * credential scoping, and the cross-entity audit flag. The actual binding
- * of an entity to a project descriptor lands in Phase A.6 (schema
- * consolidation); until then, callers default to `'cbs'` because all
- * current dispatcher traffic is Jeff's CBS Group work. WR traffic routes
- * via separate contractors today.
- *
- * This module is the single place to extend when:
- *   - Phase A.6 adds `entity` to ProjectRecord — update `entityForProject()`.
- *   - Phase H assigns Discord channels to entities — update `entityForChannel()`.
+ * Phase A.5 introduced explicit entity routing for Drive uploads, KB
+ * credential scoping, and the cross-entity audit flag. Phase A.6 binds
+ * `entity` to ProjectRecord (the project descriptor); dispatcher call sites
+ * use `resolveEntityForThread` (in `entityResolver.ts`) to look up the
+ * project's entity from a thread ID, falling back to DEFAULT_ENTITY when
+ * no project is associated.
  *
  * The audit flag is operator-opted-in via OD-027 (Decisions Applied §3A).
  */
