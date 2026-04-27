@@ -85,6 +85,7 @@ import { drainKickoffRequests, type KickoffRequest } from './kickoffInbox.js'
 import { appendProjectLog, getProject } from './projects.js'
 import { chunk } from './chunker.js'
 import { logDispatcher } from './logger.js'
+import { getCorrelationId, withCorrelation } from './correlationContext.js'
 import { ingestMessage, backfillAll } from './ingest.js'
 import {
   checkRateLimit,
@@ -186,12 +187,33 @@ function cleanContent(msg: Message): string {
 
 // ─── Discord Helpers ──────────────────────────────────────────────
 
+/**
+ * Phase A.11 (Δ DA-013, OD-027): correlation footer.
+ *
+ * Appended to project-related Discord posts so the audit reconstruction
+ * tool can pivot from a Discord message back to the dispatcher logs and
+ * trace blocks. Uses Discord's subtext markdown (`-# `) which renders as
+ * dim small grey text — visible but readable as metadata rather than
+ * interrupting message flow. One footer per *send call*; multi-chunk
+ * sends place it on the trailing chunk only.
+ */
+function correlationFooter(): string {
+  const cid = getCorrelationId()
+  return cid ? `\n-# correlation: ${cid}` : ''
+}
+
+function withFooter(text: string): string {
+  return text + correlationFooter()
+}
+
 async function sendToChannel(channel: TextBasedChannel, text: string): Promise<string[]> {
   if (!('send' in channel)) return []
   const chunks = chunk(text)
   const ids: string[] = []
-  for (const c of chunks) {
-    const sent = await channel.send(c)
+  for (let i = 0; i < chunks.length; i++) {
+    const isLast = i === chunks.length - 1
+    const body = isLast ? withFooter(chunks[i]!) : chunks[i]!
+    const sent = await channel.send(body)
     trackSent(sent.id)
     ids.push(sent.id)
   }
@@ -203,7 +225,7 @@ async function sendFiles(channel: TextBasedChannel, files: OutputFile[], message
   // Discord allows max 10 attachments per message
   const batch = files.slice(0, 10)
   const sent = await channel.send({
-    content: message,
+    content: withFooter(message),
     files: batch.map((f) => ({ attachment: f.path, name: f.name })),
   })
   trackSent(sent.id)
@@ -224,7 +246,7 @@ async function sendFiles(channel: TextBasedChannel, files: OutputFile[], message
         entity,
       )
       if (summary) {
-        const driveMsg = await channel.send({ content: summary })
+        const driveMsg = await channel.send({ content: withFooter(summary) })
         trackSent(driveMsg.id)
       }
     } catch (err) {
@@ -1431,6 +1453,19 @@ async function handleKickoff(req: KickoffRequest): Promise<void> {
     logDispatcher('kickoff_project_missing', { projectId: req.projectId })
     return
   }
+
+  // Phase A.11: enter the project's correlation scope for the entire kickoff
+  // path — all logs, Discord posts, Drive uploads, and trace blocks emitted
+  // here inherit the project descriptor's correlationId.
+  return withCorrelation(project.correlationId, () =>
+    handleKickoffInner(req, project),
+  ) as Promise<void>
+}
+
+async function handleKickoffInner(
+  req: KickoffRequest,
+  project: NonNullable<ReturnType<typeof getProject>>,
+): Promise<void> {
 
   const channel = await resolveThreadChannel(req.projectThreadId)
   if (!channel) {

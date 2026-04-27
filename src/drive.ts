@@ -38,6 +38,7 @@ import {
 import { recordUpload } from './outboxManifest.js'
 import { withUpstream, CircuitOpenError } from './circuitBreaker.js'
 import { logDispatcher } from './logger.js'
+import { getCorrelationId } from './correlationContext.js'
 
 export interface DriveUploadResult {
   name: string
@@ -292,6 +293,13 @@ async function uploadOne(
   remoteName: string,
   parentId: string,
 ): Promise<{ id: string; result: DriveUploadResult } | null> {
+  // Phase A.11 (Δ DA-013, OD-027): stamp the active correlation ID into
+  // Drive file appProperties so an artefact is linkable back through the
+  // chain without a sidecar file. Drive's appProperties are restricted to
+  // the application that wrote them (the entity's service account here),
+  // which is exactly the access pattern the audit tool wants.
+  const correlationId = getCorrelationId()
+  const appProperties = correlationId ? { correlationId } : undefined
   try {
     // The retry helper re-invokes `fn` on transient failure. Each attempt
     // needs its own read stream — the body is consumed on attempt 1, so
@@ -301,6 +309,7 @@ async function uploadOne(
       requestBody: {
         name: remoteName,
         parents: [parentId],
+        ...(appProperties ? { appProperties } : {}),
       },
       media: {
         mimeType: guessMimeType(localPath),

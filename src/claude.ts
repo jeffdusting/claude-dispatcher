@@ -41,6 +41,10 @@ import {
 } from './workerRegistry.js'
 import { acquire as acquireWorkerSlot, release as releaseWorkerSlot } from './concurrencyGate.js'
 import { logDispatcher } from './logger.js'
+import { getProject } from './projects.js'
+import { withCorrelation } from './correlationContext.js'
+import { randomUUID } from 'crypto'
+import { appendTraceBlock } from './trace.js'
 
 /**
  * Marker thrown when the concurrent-worker cap is hit and the 30-second
@@ -171,6 +175,41 @@ export async function runSession(opts: {
   const model = opts.model ?? CLAUDE_MODEL
   const entity: Entity = opts.entity ?? resolveEntityForThread(threadId)
 
+  // Phase A.11: resolve correlation ID for this turn (Δ DA-013, OD-027).
+  // For project-bound threads the ID comes from the project descriptor —
+  // the same ID stamped at project creation in projects.ts. For unbound
+  // threads (ad-hoc CoS chats) we mint a per-turn UUID so cross-cutting
+  // events still carry an ID; the audit reconstruction tool will see
+  // these as standalone turns rather than multi-step projects.
+  const correlationId = correlationIdForThread(threadRecord?.projectId) ?? randomUUID()
+  return withCorrelation(correlationId, () =>
+    runSessionInner({ ...opts, prompt, sessionId, threadId, onProgress, agent, model, entity, correlationId }),
+  ) as Promise<SessionResult>
+}
+
+function correlationIdForThread(projectId: string | undefined): string | undefined {
+  if (!projectId) return undefined
+  try {
+    const project = getProject(projectId)
+    return project?.correlationId
+  } catch {
+    return undefined
+  }
+}
+
+async function runSessionInner(opts: {
+  prompt: string
+  sessionId?: string | null
+  threadId: string
+  agent: string
+  model: string
+  entity: Entity
+  correlationId: string
+  onProgress?: (text: string) => void
+}): Promise<SessionResult> {
+  const { prompt, sessionId, threadId, agent, model, entity, correlationId, onProgress } = opts
+  const threadRecord = getThreadRecord(threadId)
+
   // Concurrent-worker cap (Phase A.9.5, Δ D-014). Gate every spawn through
   // the semaphore so a brief spike queues for up to 30s before falling back
   // to a busy response. The slot is released in finally so failures cannot
@@ -227,16 +266,12 @@ export async function runSession(opts: {
     cwd: PROJECT_DIR,
     stdout: 'pipe',
     stderr: 'pipe',
-    env: scopeWorkerEnv(entity, {
-      CLAUDE_PROJECT_DIR: PROJECT_DIR,
-      CLAUDE_THREAD_ID: threadId,
-      CLAUDE_ENTITY: entity,
-      ...(continueFile ? { CLAUDE_CONTINUE_FILE: continueFile } : {}),
-      // When the thread belongs to a Mode-3 project, surface the project ID
-      // so the PM and any in-session tools can locate the state file.
-      ...(threadRecord?.projectId
-        ? { CLAUDE_PROJECT_ID: threadRecord.projectId }
-        : {}),
+    env: buildWorkerSpawnEnv({
+      entity,
+      threadId,
+      correlationId,
+      continueFile,
+      projectId: threadRecord?.projectId,
     }),
   })
 
@@ -375,6 +410,25 @@ export async function runSession(opts: {
     toolsUsed: uniqueTools,
   })
 
+  // Phase A.11 (Δ DA-013): emit a session-completion trace block for the
+  // ingestion pipeline. Data capture only — redaction and per-EA
+  // partitioning is Phase J.0 work. The correlationId is added by
+  // appendTraceBlock from the active scope.
+  appendTraceBlock({
+    type: 'claude_session',
+    threadId,
+    projectId: threadRecord?.projectId ?? null,
+    entity,
+    agent,
+    model,
+    sessionId: capturedSessionId,
+    durationMs,
+    cost,
+    turns,
+    toolsUsed: uniqueTools,
+    responseLength: responseText.length,
+  })
+
   return {
     sessionId: capturedSessionId,
     response: responseText,
@@ -389,16 +443,44 @@ export async function runSession(opts: {
 }
 
 /**
- * Build the worker process environment with KB credentials scoped to the
- * worker's entity (Phase A.5.3, Δ DA-005). The worker sees:
- *   - The full parent environment, EXCEPT
- *   - Cross-entity Supabase variables are removed.
- *   - Entity-scoped Supabase variables are passed through under their
- *     entity-specific names so the supabase-query skill resolves them per
- *     OD-031 §5 (e.g. CBS_SUPABASE_SERVICE_ROLE_KEY for entity=cbs).
+ * Build the full worker spawn env: the standard fixed extras (project dir,
+ * thread ID, entity, correlation ID, optional project ID and continuation
+ * file) merged with entity-scoped Supabase credentials via scopeWorkerEnv.
  *
- * The skill itself is responsible for selecting the variable name from the
- * `entity` parameter; the dispatcher's job is the credential reduction.
+ * Extracted as a pure function so Phase A.11's propagation contract —
+ * `CLAUDE_CORRELATION_ID` alongside `CLAUDE_ENTITY` — is exercisable by
+ * tests without standing up a real spawn.
+ */
+export function buildWorkerSpawnEnv(opts: {
+  entity: Entity
+  threadId: string
+  correlationId: string
+  continueFile: string | null
+  projectId: string | undefined
+}): Record<string, string> {
+  return scopeWorkerEnv(opts.entity, {
+    CLAUDE_PROJECT_DIR: PROJECT_DIR,
+    CLAUDE_THREAD_ID: opts.threadId,
+    CLAUDE_ENTITY: opts.entity,
+    // Phase A.11: forward the correlation ID into the worker so any
+    // structured event the worker emits back through stdout (or any skill
+    // it invokes) can stamp the same ID. The dispatcher's stdout consumer
+    // also pairs incoming events with this ID via the active correlation
+    // scope.
+    CLAUDE_CORRELATION_ID: opts.correlationId,
+    ...(opts.continueFile ? { CLAUDE_CONTINUE_FILE: opts.continueFile } : {}),
+    // When the thread belongs to a Mode-3 project, surface the project ID
+    // so the PM and any in-session tools can locate the state file.
+    ...(opts.projectId ? { CLAUDE_PROJECT_ID: opts.projectId } : {}),
+  })
+}
+
+/**
+ * Scope KB credentials to the worker's entity (Phase A.5.3, Δ DA-005).
+ * Drops cross-entity Supabase variables; passes through the entity's own
+ * URL/service-role key so `supabase-query` resolves them per OD-031 §5.
+ * Production callers go through buildWorkerSpawnEnv; this lower-level
+ * helper remains exported so tests can assert the credential reduction.
  */
 export function scopeWorkerEnv(
   entity: Entity,
