@@ -11,7 +11,11 @@ import { syncAgents } from './agentSync.js'
 import { loadSessions, cleanupSessions, shutdown as shutdownSessions } from './sessions.js'
 import { loadThreadSessions, threadSessionCount } from './threadSessions.js'
 import { connect, disconnect, resolveThreadChannel, restoreContinuations, runKickoffCycle, notifyIfStaleAgents } from './gateway.js'
-import { shutdown as shutdownHealth, startHealthServer } from './health.js'
+import {
+  shutdown as shutdownHealth,
+  startHealthServer,
+  markShuttingDown,
+} from './health.js'
 import { sweepRetention, shutdownIngest } from './ingest.js'
 import { listActiveProjects, archiveProject } from './projects.js'
 import { logDispatcher } from './logger.js'
@@ -149,6 +153,9 @@ let shuttingDown = false
 function shutdown(): void {
   if (shuttingDown) return
   shuttingDown = true
+  // Flip /health to 503 immediately so any orchestrator polling the probe
+  // stops routing traffic before in-flight cleanup begins.
+  markShuttingDown()
   logDispatcher('shutdown_start')
 
   if (cleanupInterval) clearInterval(cleanupInterval)
