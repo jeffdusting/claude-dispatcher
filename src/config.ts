@@ -40,18 +40,62 @@ export type DispatcherRole = 'primary' | 'spare'
 export const DISPATCHER_ROLE: DispatcherRole =
   (process.env.DISPATCHER_ROLE as DispatcherRole | undefined) ?? 'primary'
 
-// Load bot token from the existing Discord plugin .env.
-// Spare mode: return '' rather than throw — connect() is never called in spare mode
-// so the empty string is never used.
-function loadToken(): string {
+/**
+ * Test-mode flag (Δ OD-034). When DISPATCHER_TEST_MODE=1 every on-disk
+ * secret fallback in this module short-circuits to empty/null. Tests set
+ * the flag; production never sets it.
+ *
+ * Background: an A.9 c6-c9 smoke test leaked a real Twilio SMS to the
+ * operator's mobile because clearing env vars did not block the .secrets
+ * fallback — readFileSync still found the laptop-dev credentials and the
+ * test made a real API call. The fix is structural: every secret-file read
+ * routes through `readSecretFileOrEmpty()` and every secret-path default
+ * routes through `secretPathFallback()`. Both return empty in test mode,
+ * so credential consumers (Twilio, Discord token, Drive folder IDs, SA
+ * key paths) all resolve to null/empty and any code path that genuinely
+ * requires a credential fails closed.
+ *
+ * The check belongs at this layer rather than at individual call sites:
+ * call-site checks would be piecemeal and easy to miss when adding a new
+ * credential; gating the two helpers below makes the policy uniform.
+ */
+export const DISPATCHER_TEST_MODE: boolean = process.env.DISPATCHER_TEST_MODE === '1'
+
+/**
+ * Read a secret file, returning '' when the file is missing, unreadable,
+ * or DISPATCHER_TEST_MODE is set. Centralised so tests cannot bypass the
+ * fallback by leaving an env var unset — the fallback itself is gated.
+ */
+function readSecretFileOrEmpty(path: string): string {
+  if (DISPATCHER_TEST_MODE) return ''
   try {
-    const content = readFileSync(ENV_FILE, 'utf8')
-    for (const line of content.split('\n')) {
-      const m = line.match(/^DISCORD_BOT_TOKEN=(.+)$/)
-      if (m) return m[1]!
-    }
-  } catch {}
-  if (DISPATCHER_ROLE === 'spare') return ''
+    return readFileSync(path, 'utf8')
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Compute the default path for a secret living under SECRETS_DIR. Returns
+ * '' in test mode so a path-typed export (e.g. CBS_DRIVE_SA_KEY_PATH)
+ * cannot accidentally point at the real on-disk credential when a test
+ * forgets to override the env var.
+ */
+function secretPathFallback(filename: string): string {
+  return DISPATCHER_TEST_MODE ? '' : join(SECRETS_DIR, filename)
+}
+
+// Load bot token from the existing Discord plugin .env.
+// Spare mode and test mode: return '' rather than throw — connect() is
+// never called in spare mode so the empty string is never used; tests that
+// drive gateway code inject their own value via env or a poster seam.
+function loadToken(): string {
+  const content = readSecretFileOrEmpty(ENV_FILE)
+  for (const line of content.split('\n')) {
+    const m = line.match(/^DISCORD_BOT_TOKEN=(.+)$/)
+    if (m) return m[1]!
+  }
+  if (DISPATCHER_ROLE === 'spare' || DISPATCHER_TEST_MODE) return ''
   throw new Error(`DISCORD_BOT_TOKEN not found in ${ENV_FILE}`)
 }
 
@@ -230,21 +274,19 @@ const SECRETS_DIR = join(homedir(), 'claude-workspace', 'generic', '.secrets')
 
 export const CBS_DRIVE_SA_KEY_PATH = envOr(
   'CBS_DRIVE_SA_KEY_PATH',
-  join(SECRETS_DIR, 'google-drive-sa.json'),
+  secretPathFallback('google-drive-sa.json'),
 )
 export const WR_DRIVE_SA_KEY_PATH = envOr(
   'WR_DRIVE_SA_KEY_PATH',
-  join(SECRETS_DIR, 'wr-drive-sa.json'),
+  secretPathFallback('wr-drive-sa.json'),
 )
 
 function loadFolderIdFromEnvFile(filename: string, key: string): string | null {
-  try {
-    const content = readFileSync(join(SECRETS_DIR, filename), 'utf8')
-    for (const line of content.split('\n')) {
-      const m = line.match(new RegExp(`^${key}=(.+)$`))
-      if (m) return m[1]!.trim()
-    }
-  } catch {}
+  const content = readSecretFileOrEmpty(join(SECRETS_DIR, filename))
+  for (const line of content.split('\n')) {
+    const m = line.match(new RegExp(`^${key}=(.+)$`))
+    if (m) return m[1]!.trim()
+  }
   return null
 }
 
@@ -285,13 +327,12 @@ export const OPS_ALERT_CHANNEL_ID: string | null =
 function loadTwilioFromEnvFiles(): Record<string, string> {
   const fields: Record<string, string> = {}
   for (const file of ['twilio-alex-morgan.env', 'sms-contacts.env']) {
-    try {
-      const content = readFileSync(join(SECRETS_DIR, file), 'utf8')
-      for (const line of content.split('\n')) {
-        const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.+)$/)
-        if (m) fields[m[1]!] = m[2]!.trim()
-      }
-    } catch {}
+    const content = readSecretFileOrEmpty(join(SECRETS_DIR, file))
+    if (!content) continue
+    for (const line of content.split('\n')) {
+      const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.+)$/)
+      if (m) fields[m[1]!] = m[2]!.trim()
+    }
   }
   return fields
 }

@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",
-    "dev": "bun --watch run src/index.ts"
+    "dev": "bun --watch run src/index.ts",
+    "test": "DISPATCHER_TEST_MODE=1 bun test"
   },
   "dependencies": {
     "discord.js": "^14.18.0",

@@ -64,7 +64,7 @@ function entityKey(entity: Entity, key: string): string {
   return `${entity}:${key}`
 }
 
-function driveEnabled(entity: Entity): boolean {
+export function driveEnabled(entity: Entity): boolean {
   const cfg = ENTITY_CONFIG[entity]
   if (!cfg.folderId) return false
   try {
@@ -73,6 +73,19 @@ function driveEnabled(entity: Entity): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * Test-friendly accessor for the per-entity Drive routing config. Exposes
+ * the tuple of (saKeyPath, folderId) so tests can assert that CBS and WR
+ * resolve to distinct paths and that DISPATCHER_TEST_MODE leaves both
+ * unconfigured. Production callers should not depend on this surface.
+ */
+export function _getEntityDriveConfigForTesting(
+  entity: Entity,
+): { saKeyPath: string; folderId: string | null } {
+  const cfg = ENTITY_CONFIG[entity]
+  return { saKeyPath: cfg.saKeyPath, folderId: cfg.folderId }
 }
 
 function getClient(entity: Entity): drive_v3.Drive | null {
