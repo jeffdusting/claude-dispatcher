@@ -351,6 +351,21 @@ export const ANTHROPIC_BUDGET_SPLIT = {
   reserve: 0.05,
 } as const
 
+// Per-worker memory observation (Phase A.9.6 — Δ D-014).
+//
+// The worker registry samples each running subprocess's RSS at
+// WORKER_MEMORY_SAMPLE_INTERVAL_MS. RSS at or above WORKER_MEMORY_WARN_BYTES
+// emits a structured `worker_memory_warn` log; RSS at or above
+// WORKER_MEMORY_KILL_BYTES SIGTERMs the subprocess and unregisters the
+// worker with status `killed`. Defaults are 1 GB / 1.5 GB / 30 seconds.
+const ONE_GB = 1024 * 1024 * 1024
+export const WORKER_MEMORY_WARN_BYTES: number =
+  parseInt(process.env.WORKER_MEMORY_WARN_BYTES ?? `${ONE_GB}`, 10)
+export const WORKER_MEMORY_KILL_BYTES: number =
+  parseInt(process.env.WORKER_MEMORY_KILL_BYTES ?? `${Math.floor(1.5 * ONE_GB)}`, 10)
+export const WORKER_MEMORY_SAMPLE_INTERVAL_MS: number =
+  parseInt(process.env.WORKER_MEMORY_SAMPLE_INTERVAL_MS ?? `${30 * 1000}`, 10)
+
 // Port for the internal health HTTP endpoint. Responds in all modes (including spare)
 // so spares can be monitored with a simple curl localhost:PORT/health.
 // Default 8080 matches the Fly.io http_service.internal_port in fly.toml.
