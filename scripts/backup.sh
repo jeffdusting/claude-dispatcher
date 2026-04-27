@@ -73,7 +73,10 @@ fail() {
 }
 
 # ── 1. tar STATE_DIR ─────────────────────────────────────────────────────────
-T0=$(date +%s%3N)
+# Use second-resolution timing — `date +%s%3N` is GNU-only and breaks on
+# macOS BSD date during the smoke test. Hourly cadence makes 1s granularity
+# sufficient.
+T0=$(date +%s)
 tar -cf "$TARFILE" -C "$STATE_DIR" . 2>"${TMP}/tar.err" \
   || fail "tar" "$(cat "${TMP}/tar.err" 2>/dev/null || echo unknown)"
 TAR_SIZE=$(stat -c%s "$TARFILE" 2>/dev/null || stat -f%z "$TARFILE")
@@ -143,13 +146,13 @@ if [ "$JSON_INVALID" -gt 0 ]; then
   fail "verify-jsonparse" "${JSON_INVALID}/${JSON_COUNT} JSON files failed to parse"
 fi
 
-T1=$(date +%s%3N)
+T1=$(date +%s)
 DURATION=$((T1 - T0))
 
 log_line "$(jq -cn \
   --arg ts "$NOW_TS" --arg key "$KEY" \
   --argjson tar "$TAR_SIZE" --argjson cipher "$CIPHER_SIZE" \
-  --argjson jsonCount "$JSON_COUNT" --argjson durationMs "$DURATION" \
-  '{ts:$ts, event:"backup_ok", key:$key, tarBytes:$tar, cipherBytes:$cipher, jsonValidated:$jsonCount, durationMs:$durationMs}')"
+  --argjson jsonCount "$JSON_COUNT" --argjson durationSec "$DURATION" \
+  '{ts:$ts, event:"backup_ok", key:$key, tarBytes:$tar, cipherBytes:$cipher, jsonValidated:$jsonCount, durationSec:$durationSec}')"
 
-echo "backup ok: ${KEY} (cipher ${CIPHER_SIZE} bytes, ${DURATION} ms, ${JSON_COUNT} JSON files validated)"
+echo "backup ok: ${KEY} (cipher ${CIPHER_SIZE} bytes, ${DURATION} s, ${JSON_COUNT} JSON files validated)"
