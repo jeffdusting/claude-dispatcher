@@ -28,6 +28,8 @@ import {
   reconcileOnBoot as reconcileWorkersOnBoot,
   startSweep as startWorkerSweep,
   stopSweep as stopWorkerSweep,
+  startMemorySweep as startWorkerMemorySweep,
+  stopMemorySweep as stopWorkerMemorySweep,
 } from './workerRegistry.js'
 import {
   shutdown as shutdownHealth,
@@ -79,6 +81,12 @@ loadSessions()
 // post-boot worker that hangs is caught.
 reconcileWorkersOnBoot(listPreviouslyBusyThreads())
 startWorkerSweep()
+
+// Per-worker memory observation sweep (Phase A.9.6, Δ D-014). Samples
+// RSS every WORKER_MEMORY_SAMPLE_INTERVAL_MS; warns at WORKER_MEMORY_WARN_BYTES
+// (default 1 GB), kills at WORKER_MEMORY_KILL_BYTES (default 1.5 GB) with
+// audit through the existing unregisterWorker(threadId,'killed',reason) path.
+startWorkerMemorySweep()
 
 // Health HTTP endpoint — runs in ALL modes including spare so the process
 // is monitorable. curl localhost:HEALTHCHECK_PORT/health
@@ -225,6 +233,7 @@ async function shutdown(): Promise<void> {
   if (retentionInterval) clearInterval(retentionInterval)
   clearInterval(heartbeatInterval)
   stopWorkerSweep()
+  stopWorkerMemorySweep()
   stopIntegrationsProbe()
   stopCapDetector()
   stopEscalator()
