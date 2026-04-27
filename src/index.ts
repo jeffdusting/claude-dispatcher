@@ -8,9 +8,27 @@
 
 import { seedStateIfAbsent } from './bootstrap.js'
 import { syncAgents } from './agentSync.js'
-import { loadSessions, cleanupSessions, shutdown as shutdownSessions } from './sessions.js'
+import {
+  loadSessions,
+  cleanupSessions,
+  shutdown as shutdownSessions,
+  listPreviouslyBusyThreads,
+} from './sessions.js'
 import { loadThreadSessions, threadSessionCount } from './threadSessions.js'
-import { connect, disconnect, resolveThreadChannel, restoreContinuations, runKickoffCycle, notifyIfStaleAgents } from './gateway.js'
+import {
+  connect,
+  disconnect,
+  resolveThreadChannel,
+  restoreContinuations,
+  replayPendingSideEffects,
+  runKickoffCycle,
+  notifyIfStaleAgents,
+} from './gateway.js'
+import {
+  reconcileOnBoot as reconcileWorkersOnBoot,
+  startSweep as startWorkerSweep,
+  stopSweep as stopWorkerSweep,
+} from './workerRegistry.js'
 import {
   shutdown as shutdownHealth,
   startHealthServer,
@@ -50,6 +68,15 @@ logDispatcher('thread_sessions_ready', { count: threadSessionCount() })
 // Load persisted live-registry state (concurrency/queue tracking).
 loadSessions()
 
+// Worker registry boot reconciliation (Phase A.9.4, Δ D-004). Sessions
+// that were 'busy' at last shutdown lost their subprocess with the prior
+// Bun process — surface them so the partial-failure-recovery framework
+// (Phase A.9.3) replays any captured side effects after the gateway is
+// connected. Start the orphan-detection sweep immediately so any
+// post-boot worker that hangs is caught.
+reconcileWorkersOnBoot(listPreviouslyBusyThreads())
+startWorkerSweep()
+
 // Health HTTP endpoint — runs in ALL modes including spare so the process
 // is monitorable. curl localhost:HEALTHCHECK_PORT/health
 startHealthServer(HEALTHCHECK_PORT, DISPATCHER_ROLE)
@@ -67,6 +94,15 @@ if (DISPATCHER_ROLE !== 'spare') {
   // immediately. Must run AFTER the Discord gateway is connected so the
   // channel resolver can fetch thread objects.
   restoreContinuations(resolveThreadChannel)
+
+  // Replay any side effects (Discord posts, Drive uploads, attachments)
+  // that were captured but not finished before the previous Bun process
+  // exited (Phase A.9.3, Δ D-003 — 25 April 2026 incident class). Run
+  // after restoreContinuations so a continuation that completed mid-flight
+  // does not race with the replay path.
+  replayPendingSideEffects(resolveThreadChannel).catch((err) => {
+    logDispatcher('side_effects_replay_top_level_error', { error: String(err) })
+  })
 
   // Tier-1 alert if the boot-time agent sync failed. Posts only if
   // OPS_ALERT_CHANNEL_ID is set; otherwise the stale flag plus log entry
@@ -163,6 +199,7 @@ function shutdown(): void {
   if (projectArchiveInterval) clearInterval(projectArchiveInterval)
   if (retentionInterval) clearInterval(retentionInterval)
   clearInterval(heartbeatInterval)
+  stopWorkerSweep()
 
   shutdownSessions()
   shutdownHealth()

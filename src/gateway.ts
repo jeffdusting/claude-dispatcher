@@ -30,7 +30,6 @@ import { join, basename } from 'path'
 import {
   DISCORD_BOT_TOKEN,
   THREAD_AUTO_ARCHIVE_MINUTES,
-  MAX_CONCURRENT_BUSY,
   PROGRESS_UPDATE_MS,
   ATTACHMENT_DIR,
   DEFAULT_GROUP_POLICY,
@@ -39,6 +38,10 @@ import {
   updateAccess,
   upsertKnownChannel,
 } from './config.js'
+import {
+  activeCount as activeWorkerCount,
+  maxConcurrentLimit,
+} from './concurrencyGate.js'
 import { readStaleFlag } from './agentSync.js'
 import {
   getSession,
@@ -51,17 +54,28 @@ import {
   queueMessage,
   queueDepth,
   drainQueue,
-  busyCount,
   getStatusSummary,
   setPendingContinuation,
   clearPendingContinuation,
   listPendingContinuations,
   type PendingContinuation,
 } from './sessions.js'
-import { runSession, generateTitle, snapshotOutbox, diffOutbox, type OutputFile } from './claude.js'
+import {
+  runSession,
+  generateTitle,
+  snapshotOutbox,
+  diffOutbox,
+  WorkerSlotUnavailableError,
+  type OutputFile,
+} from './claude.js'
 import { uploadAndSummarise, isDriveEnabled, renameThreadFolder } from './drive.js'
 import { type Entity } from './entity.js'
 import { resolveEntityForThread } from './entityResolver.js'
+import {
+  beginPostTurn,
+  markSideEffect,
+  discardPendingSideEffects,
+} from './sideEffects.js'
 import {
   readAndConsumeContinuation,
   type ContinuationDescriptor,
@@ -485,24 +499,58 @@ async function fireContinuation(
         prompt, threadId, onProgress: () => tracker?.tick(),
       })
       tracker?.stop()
+
+      // Side-effect tracking BEFORE the post-back. This is the 25 April
+      // 2026 incident's exact reference scenario: the continuation
+      // (autonomous) generated output, the response/files need posting,
+      // and a transient transport failure between runSession returning
+      // and the channel.send() must not leave the result stranded.
+      const newFiles = diffOutbox(outboxBefore)
+      beginPostTurn({
+        threadId,
+        responseText: retry.response ?? '',
+        outboxFiles: newFiles,
+        entity: resolveEntityForThread(threadId),
+        continuationReason: pending.reason,
+      })
+
       if (progressMsgId) await editMessage(channel, progressMsgId, 'Done.')
       if (retry.response) await sendToChannel(channel, retry.response)
+      markSideEffect(threadId, 'responsePosted')
+
+      if (newFiles.length > 0) {
+        await sendFiles(channel, newFiles, 'Output file(s):')
+        markSideEffect(threadId, 'attachmentsSent')
+        markSideEffect(threadId, 'outboxUploaded')
+      }
+
       markIdle(threadId, retry.sessionId!)
       trackTurnCompleted(threadId, retry.cost, retry.durationMs, retry.toolsUsed)
       recordSuccess()
     } else {
       tracker?.stop()
+      const newFiles = diffOutbox(outboxBefore)
+      beginPostTurn({
+        threadId,
+        responseText: result.response ?? '',
+        outboxFiles: newFiles,
+        entity: resolveEntityForThread(threadId),
+        continuationReason: pending.reason,
+      })
+
       if (progressMsgId) await editMessage(channel, progressMsgId, 'Done.')
       if (result.response) await sendToChannel(channel, result.response)
+      markSideEffect(threadId, 'responsePosted')
+
+      if (newFiles.length > 0) {
+        await sendFiles(channel, newFiles, 'Output file(s):')
+        markSideEffect(threadId, 'attachmentsSent')
+        markSideEffect(threadId, 'outboxUploaded')
+      }
+
       markIdle(threadId, result.sessionId!)
       trackTurnCompleted(threadId, result.cost, result.durationMs, result.toolsUsed)
       recordSuccess()
-    }
-
-    // New files in outbox
-    const newFiles = diffOutbox(outboxBefore)
-    if (newFiles.length > 0) {
-      await sendFiles(channel, newFiles, 'Output file(s):')
     }
 
     // The continuation may itself have scheduled another continuation
@@ -542,6 +590,86 @@ function buildContinuationPrompt(pending: PendingContinuation, threadId: string)
 }
 
 /**
+ * Replay any post-turn side effects that were captured but not finished
+ * before the previous Bun process exited (Phase A.9.3, Δ D-003). Walks
+ * every session entry with a non-null `pendingSideEffects` blob and posts
+ * the response and/or attachments that didn't land last time.
+ *
+ * Called from index.ts on boot, after the gateway is connected and after
+ * `restoreContinuations` so the channel resolver is ready.
+ */
+export async function replayPendingSideEffects(
+  channelResolver: (threadId: string) => Promise<TextBasedChannel | null>,
+): Promise<void> {
+  const { listPendingSideEffects } = await import('./sessions.js')
+  const items = listPendingSideEffects()
+  if (items.length === 0) {
+    logDispatcher('side_effects_replay_clean')
+    return
+  }
+
+  for (const { threadId, pending } of items) {
+    const channel = await channelResolver(threadId)
+    if (!channel) {
+      logDispatcher('side_effects_replay_channel_unresolved', { threadId })
+      // Channel unresolvable — discard. The thread may have been deleted
+      // or the bot is no longer a member; leaving the blob would block
+      // future turns from clearing state.
+      discardPendingSideEffects(threadId, 'channel_unresolved_on_replay')
+      continue
+    }
+
+    logDispatcher('side_effects_replay_start', {
+      threadId,
+      capturedAt: pending.capturedAt,
+      status: pending.status,
+      continuationReason: pending.continuationReason,
+    })
+
+    try {
+      if (!pending.status.responsePosted && pending.responseText) {
+        await sendToChannel(
+          channel,
+          `🔁 Resuming after restart — ${pending.responseText}`,
+        )
+        markSideEffect(threadId, 'responsePosted')
+      } else if (!pending.status.responsePosted) {
+        // Empty response is a degenerate case — flip the flag so we
+        // don't loop on it.
+        markSideEffect(threadId, 'responsePosted')
+      }
+
+      if (
+        (!pending.status.attachmentsSent || !pending.status.outboxUploaded) &&
+        pending.outboxFiles.length > 0
+      ) {
+        await sendFiles(
+          channel,
+          pending.outboxFiles.map((f) => ({ path: f.path, name: f.name })),
+          '🔁 Output file(s) (resumed after restart):',
+        )
+        markSideEffect(threadId, 'attachmentsSent')
+        markSideEffect(threadId, 'outboxUploaded')
+      } else if (
+        !pending.status.attachmentsSent ||
+        !pending.status.outboxUploaded
+      ) {
+        markSideEffect(threadId, 'attachmentsSent')
+        markSideEffect(threadId, 'outboxUploaded')
+      }
+
+      logDispatcher('side_effects_replay_done', { threadId })
+    } catch (err) {
+      logDispatcher('side_effects_replay_failed', {
+        threadId,
+        error: String(err).slice(0, 300),
+      })
+      // Leave the blob in place; next boot will retry.
+    }
+  }
+}
+
+/**
  * Called on Discord boot (from index.ts) and whenever a user-driven turn
  * supersedes a pending continuation. Re-arms timers from the persisted
  * session registry, firing immediately for any that are already overdue.
@@ -575,10 +703,15 @@ async function handleNewTask(msg: Message): Promise<void> {
   const content = cleanContent(msg)
   if (!content) return
 
-  // Check concurrent session limit
-  if (busyCount() >= MAX_CONCURRENT_BUSY) {
+  // Concurrent-worker cap (Phase A.9.5, Δ D-014). The pre-check avoids
+  // creating a thread we cannot service immediately. In a race where slots
+  // free up between this check and runSession, the gate inside runSession
+  // queues for up to 30 seconds before raising WorkerSlotUnavailableError;
+  // the thread already exists, so we surface a busy reply in the catch
+  // block below.
+  if (activeWorkerCount() >= maxConcurrentLimit()) {
     await msg.reply(
-      `At capacity (${MAX_CONCURRENT_BUSY} tasks running). Send again shortly or check \`!status\`.`,
+      `At capacity (${maxConcurrentLimit()} workers running). Send again shortly or check \`!status\`.`,
     )
     return
   }
@@ -637,6 +770,18 @@ async function handleNewTask(msg: Message): Promise<void> {
 
     tracker?.stop()
 
+    // Capture post-turn side effects BEFORE any post-back so a crash
+    // between runSession returning and the Discord post leaves a
+    // recoverable record (Phase A.9.3, Δ D-003 — 25 April 2026 incident
+    // reference scenario).
+    const newFiles = diffOutbox(outboxBefore)
+    beginPostTurn({
+      threadId: thread.id,
+      responseText: result.response ?? '',
+      outboxFiles: newFiles,
+      entity: resolveEntityForThread(thread.id),
+    })
+
     // Edit the progress message to show completion
     if (progressMsgId) {
       await editMessage(thread, progressMsgId, `**${title}** — complete.`)
@@ -646,11 +791,13 @@ async function handleNewTask(msg: Message): Promise<void> {
     if (result.response) {
       await sendToChannel(thread, result.response)
     }
+    markSideEffect(thread.id, 'responsePosted')
 
     // Check for new outbox files and attach them
-    const newFiles = diffOutbox(outboxBefore)
     if (newFiles.length > 0) {
       await sendFiles(thread, newFiles, `Output file(s):`)
+      markSideEffect(thread.id, 'attachmentsSent')
+      markSideEffect(thread.id, 'outboxUploaded')
     }
 
     markIdle(thread.id, result.sessionId!)
@@ -664,6 +811,20 @@ async function handleNewTask(msg: Message): Promise<void> {
     await processQueue(thread)
   } catch (err) {
     tracker?.stop()
+    if (err instanceof WorkerSlotUnavailableError) {
+      if (progressMsgId) {
+        await editMessage(thread, progressMsgId, `**${title}** — busy, send another message to retry.`)
+      }
+      // markError (not markIdle with an empty sessionId — that would corrupt
+      // the permanent mapping). The error state lets the next user message
+      // take the resume-or-start-fresh path in handleFollowUp.
+      markError(thread.id, 'worker_slot_unavailable')
+      await sendToChannel(
+        thread,
+        `At capacity (${maxConcurrentLimit()} workers running). Send another message in a moment to retry.`,
+      )
+      return
+    }
     if (progressMsgId) {
       await editMessage(thread, progressMsgId, `**${title}** — failed.`)
     }
@@ -694,6 +855,11 @@ async function handleFollowUp(msg: Message): Promise<void> {
       threadId, reason: superseded.reason,
     })
   }
+
+  // Any unfinished side effects from a prior turn are also superseded —
+  // the user has moved on, replaying a stale response would confuse them
+  // (Phase A.9.3).
+  discardPendingSideEffects(threadId, 'user_message_received')
 
   // getOrResumeSession re-seeds from the permanent thread→sessionId mapping
   // when the live entry has been cleaned up. Returns undefined only if the
@@ -795,30 +961,54 @@ async function handleFollowUp(msg: Message): Promise<void> {
       })
 
       tracker?.stop()
-      if (progressMsgId) await editMessage(msg.channel, progressMsgId, 'Done.')
+      const newFiles = diffOutbox(outboxBefore)
+      beginPostTurn({
+        threadId,
+        responseText: retryResult.response ?? '',
+        outboxFiles: newFiles,
+        entity: resolveEntityForThread(threadId),
+      })
 
+      if (progressMsgId) await editMessage(msg.channel, progressMsgId, 'Done.')
       if (retryResult.response) {
         await sendToChannel(msg.channel, retryResult.response)
       }
+      markSideEffect(threadId, 'responsePosted')
+
+      if (newFiles.length > 0) {
+        await sendFiles(msg.channel, newFiles, `Output file(s):`)
+        markSideEffect(threadId, 'attachmentsSent')
+        markSideEffect(threadId, 'outboxUploaded')
+      }
+
       markIdle(threadId, retryResult.sessionId!)
       trackTurnCompleted(threadId, retryResult.cost, retryResult.durationMs, retryResult.toolsUsed)
       recordSuccess()
     } else {
       tracker?.stop()
-      if (progressMsgId) await editMessage(msg.channel, progressMsgId, 'Done.')
+      const newFiles = diffOutbox(outboxBefore)
+      beginPostTurn({
+        threadId,
+        responseText: result.response ?? '',
+        outboxFiles: newFiles,
+        entity: resolveEntityForThread(threadId),
+      })
 
+      if (progressMsgId) await editMessage(msg.channel, progressMsgId, 'Done.')
       if (result.response) {
         await sendToChannel(msg.channel, result.response)
       }
+      markSideEffect(threadId, 'responsePosted')
+
+      if (newFiles.length > 0) {
+        await sendFiles(msg.channel, newFiles, `Output file(s):`)
+        markSideEffect(threadId, 'attachmentsSent')
+        markSideEffect(threadId, 'outboxUploaded')
+      }
+
       markIdle(threadId, result.sessionId!)
       trackTurnCompleted(threadId, result.cost, result.durationMs, result.toolsUsed)
       recordSuccess()
-    }
-
-    // Check for new outbox files
-    const newFiles = diffOutbox(outboxBefore)
-    if (newFiles.length > 0) {
-      await sendFiles(msg.channel, newFiles, `Output file(s):`)
     }
 
     // Check for autonomous continuation
@@ -1214,7 +1404,9 @@ async function handleKickoff(req: KickoffRequest): Promise<void> {
   }
 
   // At capacity? Defer — re-drop the file so the next tick picks it up.
-  if (busyCount() >= MAX_CONCURRENT_BUSY) {
+  // (Phase A.9.5, Δ D-014: now driven by the concurrent-worker gate
+  // rather than the in-memory session-busy counter.)
+  if (activeWorkerCount() >= maxConcurrentLimit()) {
     logDispatcher('kickoff_at_capacity', { projectId: req.projectId })
     // Rewrite the request so the next drain re-picks it up. Cheap.
     const { dropKickoffRequest } = await import('./kickoffInbox.js')
@@ -1271,6 +1463,19 @@ async function handleKickoff(req: KickoffRequest): Promise<void> {
     await maybeScheduleContinuation(channel, req.projectThreadId)
   } catch (err) {
     tracker?.stop()
+    if (err instanceof WorkerSlotUnavailableError) {
+      // Slot held by other workers for the full 30s queue wait. Re-drop the
+      // kickoff request so the next drain retries; the live session entry
+      // is marked errored so the next attempt re-creates it cleanly.
+      if (progressMsgId) {
+        await editMessage(channel, progressMsgId, 'PM kickoff deferred — at capacity.')
+      }
+      markError(req.projectThreadId, 'worker_slot_unavailable')
+      const { dropKickoffRequest } = await import('./kickoffInbox.js')
+      dropKickoffRequest(req)
+      appendProjectLog(req.projectId, 'PM kickoff deferred: at capacity, re-queued.')
+      return
+    }
     if (progressMsgId) {
       await editMessage(channel, progressMsgId, 'PM kickoff failed.')
     }

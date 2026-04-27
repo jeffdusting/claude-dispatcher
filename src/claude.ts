@@ -24,7 +24,31 @@ import {
   SUPABASE_ENV_NAMES,
 } from './entity.js'
 import { resolveEntityForThread } from './entityResolver.js'
+import {
+  withUpstream,
+  recordBreakerSuccess,
+  recordBreakerFailure,
+} from './circuitBreaker.js'
+import { isTransientError } from './retryWithBackoff.js'
+import {
+  registerWorker,
+  recordHeartbeat,
+  unregisterWorker,
+} from './workerRegistry.js'
+import { acquire as acquireWorkerSlot, release as releaseWorkerSlot } from './concurrencyGate.js'
 import { logDispatcher } from './logger.js'
+
+/**
+ * Marker thrown when the concurrent-worker cap is hit and the 30-second
+ * queue wait expires (Phase A.9.5, Δ D-014). Callers should catch this
+ * and surface a "busy" message to the user rather than rethrow.
+ */
+export class WorkerSlotUnavailableError extends Error {
+  constructor() {
+    super('No worker slot available within timeout')
+    this.name = 'WorkerSlotUnavailableError'
+  }
+}
 
 export interface ClaudeMessage {
   type: string
@@ -143,6 +167,16 @@ export async function runSession(opts: {
   const model = opts.model ?? CLAUDE_MODEL
   const entity: Entity = opts.entity ?? resolveEntityForThread(threadId)
 
+  // Concurrent-worker cap (Phase A.9.5, Δ D-014). Gate every spawn through
+  // the semaphore so a brief spike queues for up to 30s before falling back
+  // to a busy response. The slot is released in finally so failures cannot
+  // leak slots.
+  const slot = await acquireWorkerSlot({ timeoutMs: 30_000, reason: `runSession:${threadId}` })
+  if (!slot.acquired) {
+    logDispatcher('worker_slot_unavailable', { threadId, waitedMs: slot.waitedMs })
+    throw new WorkerSlotUnavailableError()
+  }
+
   const args: string[] = [
     '-p', prompt,
     '--agent', agent,
@@ -171,9 +205,6 @@ export async function runSession(opts: {
     promptPreview: prompt.slice(0, 200),
   })
 
-  // Snapshot outbox before run so we can detect new files
-  const outboxBefore = snapshotOutbox()
-
   // Continuation file path — per-thread, passed via env so the agent can
   // write it from inside its session to signal an autonomous continuation.
   let continueFile: string | null = null
@@ -183,6 +214,10 @@ export async function runSession(opts: {
     // Malformed threadId; continuation disabled for this run.
   }
 
+  // Outer try/finally guarantees releaseWorkerSlot fires for every spawn,
+  // independent of which exit path is taken (resume-failed return,
+  // throw-on-error, normal return).
+  try {
   const proc: Subprocess = spawn({
     cmd: [CLAUDE_BIN, ...args],
     cwd: PROJECT_DIR,
@@ -199,6 +234,14 @@ export async function runSession(opts: {
         ? { CLAUDE_PROJECT_ID: threadRecord.projectId }
         : {}),
     }),
+  })
+
+  registerWorker({
+    threadId,
+    pid: proc.pid ?? -1,
+    projectId: threadRecord?.projectId ?? null,
+    entity,
+    startedAt: startTime,
   })
 
   let responseText = ''
@@ -225,6 +268,10 @@ export async function runSession(opts: {
         if (!line.trim()) continue
         try {
           const msg: ClaudeMessage = JSON.parse(line)
+          // Stream chunk arrived — bump the worker registry heartbeat
+          // (Δ D-004, Phase A.9.4) so the orphan-detection sweep does not
+          // mark a long-but-progressing turn as hung.
+          recordHeartbeat(threadId)
           switch (msg.type) {
             case 'assistant': {
               if (msg.message?.content) {
@@ -274,6 +321,7 @@ export async function runSession(opts: {
   // Detect stale session — resume failed
   if (exitCode !== 0 && sessionId && isResumeFailed(stderr)) {
     logDispatcher('claude_resume_failed', { threadId, sessionId, durationMs, stderr: stderr.slice(0, 300) })
+    unregisterWorker(threadId, 'completed', 'resume_failed')
     return {
       sessionId: null,
       response: '',
@@ -288,8 +336,21 @@ export async function runSession(opts: {
   if (exitCode !== 0 && !responseText) {
     const errMsg = stderr.slice(0, 500) || `claude exited with code ${exitCode}`
     logDispatcher('claude_error', { threadId, exitCode, durationMs, stderr: errMsg })
+    // Anthropic-upstream breaker: a non-zero exit with no captured response
+    // is the failure signature for the 25 April 2026 529 incident class
+    // (mid-stream over-capacity errors). Auto-retrying the subprocess is
+    // unsafe (potential double-charged work, session-id mismatch on partial
+    // success); we record the failure for breaker visibility and let the
+    // gateway's stale-session retry path handle the recoverable case.
+    if (isTransientError(new Error(errMsg))) {
+      recordBreakerFailure('anthropic', errMsg)
+    }
+    unregisterWorker(threadId, 'completed', `exit_${exitCode}`)
     throw new Error(errMsg)
   }
+
+  recordBreakerSuccess('anthropic')
+  unregisterWorker(threadId, 'completed')
 
   logDispatcher('claude_done', {
     threadId,
@@ -308,6 +369,9 @@ export async function runSession(opts: {
     turns,
     durationMs,
     toolsUsed: uniqueTools,
+  }
+  } finally {
+    releaseWorkerSlot()
   }
 }
 
@@ -358,35 +422,54 @@ function isResumeFailed(stderr: string): boolean {
 
 /**
  * Generate a short thread title from a message using a fast model.
+ *
+ * Wrapped in `withUpstream('anthropic')` (Phase A.9.1/A.9.2): titles are
+ * short, idempotent prompts where the retry+breaker pair is cheap and
+ * useful. Retry exhaustion or open breaker falls back to the truncated
+ * message — title generation is non-essential, so the breaker should not
+ * propagate failures up the stack.
  */
 export async function generateTitle(message: string): Promise<string> {
   const prompt = `Generate a concise thread title (max 80 chars, no quotes) for this task:\n\n${message.slice(0, 500)}`
 
-  const proc = spawn({
-    cmd: [
-      CLAUDE_BIN,
-      '-p', prompt,
-      '--model', 'haiku',
-      '--output-format', 'text',
-      '--no-session-persistence',
-    ],
-    cwd: PROJECT_DIR,
-    stdout: 'pipe',
-    stderr: 'pipe',
-    env: { ...process.env, CLAUDE_PROJECT_DIR: PROJECT_DIR },
-  })
+  try {
+    return await withUpstream('anthropic', async () => {
+      const proc = spawn({
+        cmd: [
+          CLAUDE_BIN,
+          '-p', prompt,
+          '--model', 'haiku',
+          '--output-format', 'text',
+          '--no-session-persistence',
+        ],
+        cwd: PROJECT_DIR,
+        stdout: 'pipe',
+        stderr: 'pipe',
+        env: { ...process.env, CLAUDE_PROJECT_DIR: PROJECT_DIR },
+      })
 
-  const [output, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ])
-  const exitCode = await proc.exited
+      const [output, stderr] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ])
+      const exitCode = await proc.exited
 
-  if (exitCode !== 0) {
-    logDispatcher('generate_title_failed', { exitCode, stderr: stderr.slice(0, 300), stdout: output.slice(0, 300) })
+      if (exitCode !== 0) {
+        logDispatcher('generate_title_failed', {
+          exitCode,
+          stderr: stderr.slice(0, 300),
+          stdout: output.slice(0, 300),
+        })
+        // Throw so the retry helper can decide whether the error is
+        // transient. Non-transient errors propagate to the outer catch
+        // and fall back to the truncated message.
+        throw new Error(stderr.slice(0, 300) || `claude exited with code ${exitCode}`)
+      }
+
+      const title = output.trim().replace(/^["']|["']$/g, '').slice(0, 100)
+      return title || message.slice(0, 80)
+    }, { operation: 'generate_title', attempts: 3 })
+  } catch {
     return message.slice(0, 80)
   }
-
-  const title = output.trim().replace(/^["']|["']$/g, '').slice(0, 100)
-  return title || message.slice(0, 80)
 }

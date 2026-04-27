@@ -52,6 +52,36 @@ export interface PendingContinuation {
   scheduledAtMs: number
 }
 
+/**
+ * Per-side-effect completion flags for the partial-failure recovery
+ * framework (Phase A.9.3, Δ D-003). Each flag flips to true once its side
+ * effect completes; when all are true the parent `pendingSideEffects` blob
+ * is cleared. The flags map to the post-turn fan-out the gateway runs:
+ * post the response to the thread, upload outbox files to Drive, attach
+ * the files to the thread.
+ */
+export interface SideEffectStatus {
+  responsePosted: boolean
+  outboxUploaded: boolean
+  attachmentsSent: boolean
+}
+
+export interface PendingOutboxFile {
+  path: string
+  name: string
+}
+
+export interface PendingSideEffects {
+  capturedAt: number
+  responseText: string
+  outboxFiles: PendingOutboxFile[]
+  /** Entity at the time the turn ran — drives Drive routing on replay. */
+  entity: 'cbs' | 'wr'
+  /** When set, the turn was a continuation; recorded for telemetry. */
+  continuationReason: string | null
+  status: SideEffectStatus
+}
+
 export interface SessionEntry {
   threadId: string
   sessionId: string | null    // null until first response captured
@@ -69,10 +99,23 @@ export interface SessionEntry {
    * (or fires immediately if the deadline has already passed).
    */
   pendingContinuation?: PendingContinuation | null
+  /**
+   * Post-turn side effects awaiting completion (Phase A.9.3, Δ D-003).
+   * When non-null, a previous turn finished generating a response and
+   * outbox files, but at least one downstream side effect (Discord post,
+   * Drive upload, attachment send) has not yet succeeded. Persisted across
+   * restarts so the boot-time replay pass can finish the work.
+   */
+  pendingSideEffects?: PendingSideEffects | null
 }
 
 // In-memory registry
 const sessions = new Map<string, SessionEntry>()
+
+// Snapshot of thread IDs that were busy at last persist, captured during
+// loadSessions BEFORE the busy → idle flip. Used by the worker registry's
+// reconcileOnBoot to detect orphaned subprocesses (Phase A.9.4, Δ D-004).
+const previouslyBusySnapshot: string[] = []
 
 // Load persisted state on startup. Reconciles sessionId from the permanent
 // mapping if present — threadSessions.json is the source of truth for resume.
@@ -80,6 +123,12 @@ export function loadSessions(): void {
   try {
     const data = JSON.parse(readFileSync(SESSIONS_FILE, 'utf8')) as SessionEntry[]
     for (const entry of data) {
+      // Capture busy state for boot-time orphan detection (Phase A.9.4)
+      // before flipping to idle below. The previous Bun process owned any
+      // actually-running subprocesses, so on restart these are gone.
+      if (entry.status === 'busy') {
+        previouslyBusySnapshot.push(entry.threadId)
+      }
       // Mark all as idle on restart (we can't reconnect to running processes)
       entry.status = entry.status === 'busy' ? 'idle' : entry.status
       entry.messageQueue = []
@@ -233,6 +282,46 @@ export function setPendingContinuation(
     fireAtMs: cont.fireAtMs,
     reason: cont.reason,
   })
+}
+
+// Set the pending-side-effects blob for a thread (Phase A.9.3). Persisted
+// so a crash between runSession returning and the first post-back leaves
+// a recoverable record on disk.
+export function setPendingSideEffects(
+  threadId: string,
+  pending: PendingSideEffects,
+): void {
+  const entry = sessions.get(threadId)
+  if (!entry) return
+  entry.pendingSideEffects = pending
+  persist()
+}
+
+export function clearPendingSideEffects(threadId: string): void {
+  const entry = sessions.get(threadId)
+  if (!entry || !entry.pendingSideEffects) return
+  entry.pendingSideEffects = null
+  persist()
+}
+
+// Boot-time helper — list every session that has incomplete side effects
+// so index.ts can replay them after the gateway is connected.
+export function listPendingSideEffects(): Array<{ threadId: string; pending: PendingSideEffects }> {
+  const out: Array<{ threadId: string; pending: PendingSideEffects }> = []
+  for (const entry of sessions.values()) {
+    if (entry.pendingSideEffects) {
+      out.push({ threadId: entry.threadId, pending: entry.pendingSideEffects })
+    }
+  }
+  return out
+}
+
+// Boot-time helper — list every session that was busy at last persist.
+// Used by the worker registry's reconcileOnBoot to surface orphans.
+// Captured during loadSessions BEFORE the busy → idle flip so callers
+// observing this on boot see the right state.
+export function listPreviouslyBusyThreads(): string[] {
+  return [...previouslyBusySnapshot]
 }
 
 // Clear the pending continuation (called when the timer fires, or when
