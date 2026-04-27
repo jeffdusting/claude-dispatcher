@@ -17,7 +17,8 @@ import {
   GatewayIntentBits,
   type Message,
   type MessageReaction,
-  type ThreadChannel,
+  type AnyThreadChannel,
+  type PublicThreadChannel,
   type TextBasedChannel,
   type User,
   type PartialMessageReaction,
@@ -736,7 +737,7 @@ async function handleNewTask(msg: Message): Promise<void> {
   }
 
   // Create Discord thread
-  let thread: ThreadChannel
+  let thread: PublicThreadChannel<false>
   try {
     thread = await msg.startThread({
       name: title,
@@ -1022,7 +1023,7 @@ async function handleFollowUp(msg: Message): Promise<void> {
 
     // Process any queued messages
     if (msg.channel.isThread()) {
-      await processQueue(msg.channel as ThreadChannel)
+      await processQueue(msg.channel)
     }
   } catch (err) {
     tracker?.stop()
@@ -1034,7 +1035,7 @@ async function handleFollowUp(msg: Message): Promise<void> {
   }
 }
 
-async function processQueue(thread: ThreadChannel): Promise<void> {
+async function processQueue(thread: AnyThreadChannel): Promise<void> {
   const drained = drainQueue(thread.id)
   if (!drained) return
 

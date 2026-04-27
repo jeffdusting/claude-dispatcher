@@ -5,7 +5,7 @@
  * events. Each session runs as a child process.
  */
 
-import { spawn, type Subprocess } from 'bun'
+import { spawn } from 'bun'
 import { readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import {
@@ -222,7 +222,7 @@ export async function runSession(opts: {
   // independent of which exit path is taken (resume-failed return,
   // throw-on-error, normal return).
   try {
-  const proc: Subprocess = spawn({
+  const proc = spawn({
     cmd: [CLAUDE_BIN, ...args],
     cwd: PROJECT_DIR,
     stdout: 'pipe',
