@@ -25,6 +25,7 @@
  */
 
 import { logDispatcher } from './logger.js'
+import { isDraining } from './drain.js'
 
 const DEFAULT_MAX_CONCURRENT = 5
 const DEFAULT_QUEUE_TIMEOUT_MS = 30_000
@@ -62,6 +63,14 @@ export interface AcquireResult {
 export function acquire(opts: AcquireOptions = {}): Promise<AcquireResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS
   const start = Date.now()
+
+  // Refuse to admit new work once SIGTERM has fired (Phase A.9.7, Δ D-008).
+  // The drain budget is for workers already holding slots — granting new ones
+  // would extend the shutdown beyond the spec's 90-second window.
+  if (isDraining()) {
+    logDispatcher('concurrency_rejected_draining', { reason: opts.reason })
+    return Promise.resolve({ acquired: false, waitedMs: 0 })
+  }
 
   if (active < maxConcurrent) {
     active++

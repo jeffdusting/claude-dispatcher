@@ -98,6 +98,12 @@ import {
   getStatsReport,
   getHealthLine,
 } from './health.js'
+import { isDraining } from './drain.js'
+import { isAnthropicCapHit } from './anthropicCap.js'
+import {
+  setDiscordPoster,
+  acknowledgeByMessageId as acknowledgeTier2Alert,
+} from './escalator.js'
 
 mkdirSync(ATTACHMENT_DIR, { recursive: true })
 
@@ -1096,6 +1102,17 @@ async function handleStats(msg: Message): Promise<void> {
 async function handleMessage(msg: Message): Promise<void> {
   if (!shouldProcess(msg)) return
 
+  // Stop accepting new traffic once SIGTERM has fired (Phase A.9.7, Δ D-008).
+  // In-flight workers continue to run via the drain budget; new arrivals are
+  // ignored so the queue does not grow during shutdown.
+  if (isDraining()) {
+    logDispatcher('message_dropped_draining', {
+      channelId: msg.channelId,
+      userId: msg.author.id,
+    })
+    return
+  }
+
   trackMessageReceived()
 
   logDispatcher('message_received', {
@@ -1293,6 +1310,11 @@ client.on('messageReactionAdd', async (
     const messageId = reaction.message.id
     if (!recentSentIds.has(messageId)) return
 
+    // Tier-2 alert acknowledgement (Phase A.9.8). Any non-bot reaction on
+    // a tracked alert message clears the SMS escalation. Quality-signal
+    // tracking continues below; the two are orthogonal.
+    acknowledgeTier2Alert(messageId, user.id)
+
     const emoji = reaction.emoji.name ?? ''
     const signal = QUALITY_REACTIONS[emoji]
     if (!signal) return
@@ -1321,6 +1343,21 @@ client.on('messageReactionAdd', async (
 
 export async function connect(): Promise<void> {
   await client.login(DISCORD_BOT_TOKEN)
+  // Register the Discord poster for the tier-2 escalator (Phase A.9.8).
+  // The escalator is upstream-agnostic and only knows about a string body;
+  // gateway.ts owns the channel resolution and message ID extraction.
+  setDiscordPoster(async (channelId, body) => {
+    try {
+      const ch = await client.channels.fetch(channelId)
+      if (!ch || !('send' in ch)) return null
+      const sent = await (ch as { send: (b: string) => Promise<{ id: string }> }).send(body)
+      recentSentIds.add(sent.id)
+      return sent.id
+    } catch (err) {
+      logDispatcher('tier2_poster_send_failed', { error: String(err).slice(0, 200) })
+      return null
+    }
+  })
 }
 
 export async function disconnect(): Promise<void> {
@@ -1496,6 +1533,19 @@ async function handleKickoff(req: KickoffRequest): Promise<void> {
  * slow PM doesn't block subsequent kickoffs.
  */
 export function runKickoffCycle(): void {
+  // The Anthropic monthly-cap detector (Phase A.9.9) writes a marker file
+  // when the upstream cap is hit; while it is present, kickoff dispatch is
+  // paused so we do not start new projects we cannot finish. In-flight
+  // workers continue to drain on the existing cap allowance.
+  if (isAnthropicCapHit()) {
+    logDispatcher('kickoff_cycle_paused_cap_hit')
+    return
+  }
+  if (isDraining()) {
+    // SIGTERM has fired — do not start new project sessions during drain.
+    // Pending kickoff files remain on disk and the next process picks them up.
+    return
+  }
   const pending = drainKickoffRequests()
   if (pending.length === 0) return
   logDispatcher('kickoff_cycle', { count: pending.length })

@@ -270,6 +270,87 @@ export const DISPATCHER_PAUSE_CRON: boolean = process.env.DISPATCHER_PAUSE_CRON 
 export const OPS_ALERT_CHANNEL_ID: string | null =
   process.env.OPS_ALERT_CHANNEL_ID?.trim() || null
 
+// Twilio SMS escalation (Phase A.9 component 8 — Δ O-002, OD-011).
+//
+// A tier-2 Discord alert posted to OPS_ALERT_CHANNEL_ID gets escalated to
+// SMS if it has not received an acknowledgement reaction within
+// TIER2_ACK_WINDOW_MS. All four variables must resolve for SMS to be sent;
+// missing creds produce a log-only fallback so a misconfigured environment
+// does not silently swallow alerts.
+//
+// Laptop dev resolves these from `.secrets/twilio-alex-morgan.env` and
+// `.secrets/sms-contacts.env` via the loader below. Cloud (Fly.io) sets
+// them via `fly secrets set`. Phase B.4 moves them onto 1Password
+// fetch-at-boot.
+function loadTwilioFromEnvFiles(): Record<string, string> {
+  const fields: Record<string, string> = {}
+  for (const file of ['twilio-alex-morgan.env', 'sms-contacts.env']) {
+    try {
+      const content = readFileSync(join(SECRETS_DIR, file), 'utf8')
+      for (const line of content.split('\n')) {
+        const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.+)$/)
+        if (m) fields[m[1]!] = m[2]!.trim()
+      }
+    } catch {}
+  }
+  return fields
+}
+
+const TWILIO_FALLBACK = loadTwilioFromEnvFiles()
+
+export const TWILIO_ACCOUNT_SID: string | null =
+  process.env.TWILIO_ACCOUNT_SID?.trim() || TWILIO_FALLBACK.TWILIO_ACCOUNT_SID || null
+
+export const TWILIO_AUTH_TOKEN: string | null =
+  process.env.TWILIO_AUTH_TOKEN?.trim() || TWILIO_FALLBACK.TWILIO_AUTH_TOKEN || null
+
+export const TWILIO_FROM_NUMBER: string | null =
+  process.env.TWILIO_FROM_NUMBER?.trim() || TWILIO_FALLBACK.TWILIO_FROM_NUMBER || null
+
+/**
+ * Operator mobile number (E.164). Falls back to JEFF_MOBILE from the SMS
+ * contacts file. WR escalation routes via SARAH_MOBILE per OD-008 (Sarah
+ * is backup operator on the WR side); the escalator picks the appropriate
+ * recipient based on the alert level / entity.
+ */
+export const OPERATOR_MOBILE: string | null =
+  process.env.OPERATOR_MOBILE?.trim() || TWILIO_FALLBACK.JEFF_MOBILE || null
+
+export const SARAH_MOBILE: string | null =
+  process.env.SARAH_MOBILE?.trim() || TWILIO_FALLBACK.SARAH_MOBILE || null
+
+/** Time after a tier-2 alert post without an ack before SMS escalation fires. */
+export const TIER2_ACK_WINDOW_MS: number =
+  parseInt(process.env.TIER2_ACK_WINDOW_MS ?? `${5 * 60 * 1000}`, 10)
+
+// Anthropic monthly-cap detector (Phase A.9.9 — OD-012).
+//
+// `ANTHROPIC_ADMIN_KEY` is the Organisation-scoped admin key used to query
+// the Admin API for cycle-to-date usage. Optional: when unset, the proactive
+// budget check is skipped and only the reactive path (claude.ts catches a
+// monthly-cap error from a subprocess) detects cap hits. Phase B.4 moves
+// this onto 1Password fetch-at-boot.
+export const ANTHROPIC_ADMIN_KEY: string | null =
+  process.env.ANTHROPIC_ADMIN_KEY?.trim() || null
+
+/**
+ * Per-consumer monthly Anthropic spend cap (USD). The dispatcher uses this
+ * to compute per-consumer thresholds (70/85/95% per OD-012). The total cap
+ * is what Anthropic enforces at the organisation level; the splits below
+ * are what the dispatcher polices to avoid one consumer starving the
+ * others. Override via env: `ANTHROPIC_MONTHLY_CAP_USD`.
+ */
+export const ANTHROPIC_MONTHLY_CAP_USD: number =
+  parseFloat(process.env.ANTHROPIC_MONTHLY_CAP_USD ?? '5000')
+
+/** Per OD-012: 50% dispatcher / 30% Paperclip / 15% mail-manager / 5% reserve. */
+export const ANTHROPIC_BUDGET_SPLIT = {
+  dispatcher: 0.50,
+  paperclip: 0.30,
+  'mail-manager': 0.15,
+  reserve: 0.05,
+} as const
+
 // Port for the internal health HTTP endpoint. Responds in all modes (including spare)
 // so spares can be monitored with a simple curl localhost:PORT/health.
 // Default 8080 matches the Fly.io http_service.internal_port in fly.toml.

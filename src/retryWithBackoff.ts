@@ -18,7 +18,29 @@
  */
 import { logDispatcher } from './logger.js'
 
-export type Upstream = 'anthropic' | 'paperclip' | 'drive' | 'graph'
+/**
+ * Named upstreams covered by the resilience layer (retry + breaker +
+ * /health/integrations probe). The set spans the full upstream surface the
+ * dispatcher and its workers depend on:
+ *   - `anthropic`  — Anthropic API for Claude (per-request 5xx + monthly cap)
+ *   - `discord`    — Discord gateway and REST
+ *   - `paperclip`  — Paperclip agent platform
+ *   - `drive`      — Google Drive (per-entity SA)
+ *   - `graph`      — Microsoft Graph (mail-manager / Outlook)
+ *   - `supabase`   — KB query backend (per-entity service role)
+ *   - `voyage`     — embeddings model used by the KB
+ *
+ * Adding an upstream: extend this union AND `INTEGRATION_UPSTREAMS` in
+ * `circuitBreaker.ts` so `getBreakerSnapshot()` reports it.
+ */
+export type Upstream =
+  | 'anthropic'
+  | 'discord'
+  | 'paperclip'
+  | 'drive'
+  | 'graph'
+  | 'supabase'
+  | 'voyage'
 
 export interface RetryOptions {
   upstream: Upstream
