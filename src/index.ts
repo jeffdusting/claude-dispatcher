@@ -32,8 +32,11 @@ import {
 import {
   shutdown as shutdownHealth,
   startHealthServer,
-  markShuttingDown,
 } from './health.js'
+import { markDraining, awaitWorkersDrained } from './drain.js'
+import { startIntegrationsProbe, stopIntegrationsProbe } from './integrationsHealth.js'
+import { startCapDetector, stopCapDetector } from './anthropicCap.js'
+import { startEscalator, stopEscalator } from './escalator.js'
 import { sweepRetention, shutdownIngest } from './ingest.js'
 import { listActiveProjects, archiveProject } from './projects.js'
 import { logDispatcher } from './logger.js'
@@ -80,6 +83,21 @@ startWorkerSweep()
 // Health HTTP endpoint — runs in ALL modes including spare so the process
 // is monitorable. curl localhost:HEALTHCHECK_PORT/health
 startHealthServer(HEALTHCHECK_PORT, DISPATCHER_ROLE)
+
+// Integrations health probe — refreshes the per-upstream snapshot every 60s.
+// /health/integrations reads the cached value, so the request handler does
+// not block on synchronous probes (Phase A.9 component 7, OD-033).
+startIntegrationsProbe()
+
+// Anthropic monthly-cap detector — periodic light probe distinguishes the
+// monthly-cap signature from per-request 5xx so kickoff can be paused
+// without blocking in-flight worker streams (Phase A.9 component 9,
+// reference scenario: 24 April 2026 cap-hit incident).
+startCapDetector()
+
+// Tier-2 alert escalator — sweeps unacked Discord alerts at the configured
+// cadence and sends SMS via Twilio per OD-011 (Phase A.9 component 8).
+startEscalator()
 
 // skipCron is true for spare (no Discord, no cron) and for pause-cron mode
 // (Discord active, cron suppressed so cloud owns scheduling during cutover).
@@ -184,14 +202,21 @@ const heartbeatInterval = setInterval(() => {
   })
 }, 5 * 60 * 1000)
 
-// Graceful shutdown
+// Graceful shutdown (Phase A.9.7, Δ D-008).
+//
+// Sequence: flip the drain flag, stop scheduled intervals so no new work
+// starts, wait up to 90s for in-flight workers to complete, hard-kill any
+// survivors, flush state files, disconnect from Discord, exit. The 10-second
+// post-disconnect force-exit timer is the secondary guard for a stuck
+// disconnect; the 90-second drain window is the primary budget per spec.
 let shuttingDown = false
-function shutdown(): void {
+async function shutdown(): Promise<void> {
   if (shuttingDown) return
   shuttingDown = true
-  // Flip /health to 503 immediately so any orchestrator polling the probe
-  // stops routing traffic before in-flight cleanup begins.
-  markShuttingDown()
+  // Flip the drain flag. Inbound traffic, kickoff cycle, and concurrency-gate
+  // acquires now reject; /health flips to 503; the worker registry is the
+  // source of truth for what is in flight.
+  markDraining()
   logDispatcher('shutdown_start')
 
   if (cleanupInterval) clearInterval(cleanupInterval)
@@ -200,6 +225,14 @@ function shutdown(): void {
   if (retentionInterval) clearInterval(retentionInterval)
   clearInterval(heartbeatInterval)
   stopWorkerSweep()
+  stopIntegrationsProbe()
+  stopCapDetector()
+  stopEscalator()
+
+  // Wait for in-flight workers to complete; force-kill survivors at the
+  // budget. State-file flushes happen after the wait so anything captured
+  // by a worker that finished mid-drain is persisted.
+  const drainResult = await awaitWorkersDrained()
 
   shutdownSessions()
   shutdownHealth()
@@ -212,13 +245,13 @@ function shutdown(): void {
 
   if (DISPATCHER_ROLE === 'spare') {
     // Nothing to disconnect — spare never called connect().
-    logDispatcher('shutdown_complete')
+    logDispatcher('shutdown_complete', { ...drainResult })
     clearTimeout(forceTimer)
     process.exit(0)
   } else {
     disconnect()
       .then(() => {
-        logDispatcher('shutdown_complete')
+        logDispatcher('shutdown_complete', { ...drainResult })
         clearTimeout(forceTimer)
         process.exit(0)
       })
@@ -229,9 +262,16 @@ function shutdown(): void {
   }
 }
 
-process.on('SIGTERM', shutdown)
-process.on('SIGINT', shutdown)
-process.on('SIGHUP', shutdown)
+function triggerShutdown(): void {
+  shutdown().catch((err) => {
+    logDispatcher('shutdown_error', { error: String(err) })
+    process.exit(1)
+  })
+}
+
+process.on('SIGTERM', triggerShutdown)
+process.on('SIGINT', triggerShutdown)
+process.on('SIGHUP', triggerShutdown)
 
 // Catch unhandled errors so the process doesn't die silently
 process.on('unhandledRejection', (err) => {

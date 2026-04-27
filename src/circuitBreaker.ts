@@ -251,10 +251,24 @@ export function getBreakerState(upstream: Upstream): BreakerState {
   return e.state
 }
 
+/**
+ * Canonical list of upstreams reported by getBreakerSnapshot and consumed by
+ * integrationsHealth.ts for `/health/integrations` (Phase A.9 component 7,
+ * OD-033). Keep aligned with the `Upstream` union in retryWithBackoff.ts.
+ */
+export const INTEGRATION_UPSTREAMS: readonly Upstream[] = [
+  'anthropic',
+  'discord',
+  'paperclip',
+  'drive',
+  'graph',
+  'supabase',
+  'voyage',
+]
+
 export function getBreakerSnapshot(): Record<Upstream, BreakerSnapshot> {
-  const upstreams: Upstream[] = ['anthropic', 'paperclip', 'drive', 'graph']
   const out = {} as Record<Upstream, BreakerSnapshot>
-  for (const upstream of upstreams) {
+  for (const upstream of INTEGRATION_UPSTREAMS) {
     const e = breakers.get(upstream)
     if (!e) {
       out[upstream] = {

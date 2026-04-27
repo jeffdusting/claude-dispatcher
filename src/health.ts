@@ -15,6 +15,7 @@ import { writeJsonAtomic } from './atomicWrite.js'
 import { join } from 'path'
 import { STATE_DIR, LOG_DIR } from './config.js'
 import { logDispatcher } from './logger.js'
+import { isDraining, markDraining } from './drain.js'
 
 mkdirSync(STATE_DIR, { recursive: true })
 
@@ -296,44 +297,53 @@ export function shutdown(): void {
 
 // ─── Health HTTP Server ───────────────────────────────────────────
 
-// Liveness flag — flipped by markShuttingDown() so /health returns 503 once
-// the graceful-shutdown drain begins. Phase A.9 will extend the drain logic
-// (worker registry; 90s window; partial-failure recovery); A.7 only wires the
-// probe contract so an orchestrator can stop routing traffic immediately.
-let shuttingDown = false
-
 /**
- * Mark the dispatcher as shutting down. Subsequent /health responses return
- * 503 with an empty body. Idempotent.
+ * Mark the dispatcher as shutting down. Re-exports drain.markDraining so
+ * existing callers (index.ts shutdown) keep working without churn. The
+ * public /health probe reads the drain flag; the same flag also gates
+ * inbound message processing in gateway.ts and the concurrency-gate
+ * acquire path so SIGTERM stops accepting new work the moment it fires.
  */
 export function markShuttingDown(): void {
-  shuttingDown = true
+  markDraining()
 }
 
 /**
  * Start the public HTTP server on `port`. A.7 (Migration Plan §4.7.1, Δ S-008,
- * architecture v2.1 §3.1) requires `/health` to return liveness only:
+ * architecture v2.1 §3.1) wires `/health` as the public liveness probe:
  *   - 200 with body `ok` when alive and not draining.
  *   - 503 with no body once shutdown has been signalled.
- * Any other path returns 404 — closes the S-008 information-leak surface
- * (no role, pid, memory, or circuit state in the public response).
  *
- * `/health/integrations` is owned by Phase A.9 and is not served here.
+ * A.9 (Migration Plan §4.9 — OD-033) adds `/health/integrations`, the
+ * per-upstream snapshot used by the supercronic probe loop. The handler is
+ * loaded lazily to avoid import cycles between health.ts (HTTP surface) and
+ * integrationsHealth.ts (cached snapshot consumer of the breaker module).
  */
 export function startHealthServer(port: number, role: string): void {
   Bun.serve({
     port,
-    fetch(req) {
-      const url = new URL(req.url)
-      if (url.pathname === '/health') {
-        if (shuttingDown) return new Response(null, { status: 503 })
-        return new Response('ok', {
-          status: 200,
-          headers: { 'content-type': 'text/plain; charset=utf-8' },
-        })
-      }
-      return new Response('Not found', { status: 404 })
-    },
+    fetch: handleHealthRequest,
   })
   logDispatcher('health_server_started', { port, role })
+}
+
+async function handleHealthRequest(req: Request): Promise<Response> {
+  const url = new URL(req.url)
+  if (url.pathname === '/health') {
+    if (isDraining()) return new Response(null, { status: 503 })
+    return new Response('ok', {
+      status: 200,
+      headers: { 'content-type': 'text/plain; charset=utf-8' },
+    })
+  }
+  if (url.pathname === '/health/integrations') {
+    const { getIntegrationsHealth } = await import('./integrationsHealth.js')
+    const snapshot = getIntegrationsHealth()
+    const aggregateOk = snapshot.aggregate === 'ok'
+    return new Response(JSON.stringify(snapshot, null, 2), {
+      status: aggregateOk ? 200 : 503,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    })
+  }
+  return new Response('Not found', { status: 404 })
 }

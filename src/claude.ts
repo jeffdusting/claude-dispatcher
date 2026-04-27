@@ -31,6 +31,10 @@ import {
 } from './circuitBreaker.js'
 import { isTransientError } from './retryWithBackoff.js'
 import {
+  classifyAnthropicError,
+  recordCapHitFromError,
+} from './anthropicCap.js'
+import {
   registerWorker,
   recordHeartbeat,
   unregisterWorker,
@@ -336,13 +340,22 @@ export async function runSession(opts: {
   if (exitCode !== 0 && !responseText) {
     const errMsg = stderr.slice(0, 500) || `claude exited with code ${exitCode}`
     logDispatcher('claude_error', { threadId, exitCode, durationMs, stderr: errMsg })
-    // Anthropic-upstream breaker: a non-zero exit with no captured response
-    // is the failure signature for the 25 April 2026 529 incident class
-    // (mid-stream over-capacity errors). Auto-retrying the subprocess is
-    // unsafe (potential double-charged work, session-id mismatch on partial
-    // success); we record the failure for breaker visibility and let the
-    // gateway's stale-session retry path handle the recoverable case.
-    if (isTransientError(new Error(errMsg))) {
+    // Classify the upstream error so the resilience layer treats billing
+    // failures separately from per-request 5xx (Phase A.9.9, OD-012). The
+    // 24 April 2026 monthly-cap incident showed that retrying a billing
+    // failure wastes budget; the marker file pauses the kickoff cycle and
+    // the tier-2 alert reaches the operator.
+    const errClass = classifyAnthropicError(errMsg)
+    if (errClass === 'monthly-cap') {
+      recordCapHitFromError(errMsg)
+    } else if (errClass === 'transient' || isTransientError(new Error(errMsg))) {
+      // Anthropic-upstream breaker: a non-zero exit with no captured
+      // response is the failure signature for the 25 April 2026 529
+      // incident class (mid-stream over-capacity errors). Auto-retrying
+      // the subprocess is unsafe (potential double-charged work, session-id
+      // mismatch on partial success); we record the failure for breaker
+      // visibility and let the gateway's stale-session retry path handle
+      // the recoverable case.
       recordBreakerFailure('anthropic', errMsg)
     }
     unregisterWorker(threadId, 'completed', `exit_${exitCode}`)
