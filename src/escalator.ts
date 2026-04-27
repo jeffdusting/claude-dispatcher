@@ -268,6 +268,17 @@ async function sendSmsViaTwilio(toMobile: string, body: string): Promise<boolean
  * shutdown after a final sweep.
  */
 export async function sweepEscalations(now: number = Date.now()): Promise<number> {
+  // Drain any tier-2 alerts queued by sidecar processes (notably the
+  // hourly backup script in scripts/backup.sh — Migration Plan §5.2.2).
+  // Dynamic import so pendingAlerts.ts can pull postTier2Alert from this
+  // module without a static cycle.
+  try {
+    const { drainPendingTier2Alerts } = await import('./pendingAlerts.js')
+    await drainPendingTier2Alerts()
+  } catch (err) {
+    logDispatcher('pending_alerts_drain_failed', { error: String(err) })
+  }
+
   let escalated = 0
   for (const r of records.values()) {
     if (r.escalationStatus !== 'pending') continue

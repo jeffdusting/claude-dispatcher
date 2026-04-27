@@ -1,0 +1,56 @@
+# Fly.io fly-log-shipper deployment — ships dispatcher logs to R2.
+# App: cos-log-shipper  |  Region: syd  |  Migration Plan §5.2.3 (Δ S-006).
+#
+# Image: ghcr.io/superfly/fly-log-shipper (Vector-based router).
+# Reads dispatcher logs via Fly's log firehose (NATS) and writes them to R2
+# under prefix s3://cos-backups/logs/YYYY/MM/DD/. The 6-month lifecycle on
+# the bucket (Δ OD-002) covers retention; no per-prefix retention needed.
+#
+# Deployment is staged. The app is created during Phase B.3 with this fly.toml
+# committed to source. The actual deploy + secret population happens at Phase
+# E.1 (cutover) so logs start flowing the moment the dispatcher comes up.
+#
+# Secrets required at deploy time (set via flyctl secrets set, not via this
+# file). All sourced from 1Password vault CoS-Dispatcher:
+#   ACCESS_TOKEN       Fly token with logs:read on cos-dispatcher.
+#                      Created via:
+#                        flyctl tokens create logs --app cos-dispatcher --name log-shipper
+#                      Item: log-shipper-fly-token (created in B.3 / B.4).
+#   AWS_ACCESS_KEY_ID  R2 bucket-scoped access key. Item:
+#                        op://CoS-Dispatcher/r2-bucket-credentials/access-key-id
+#   AWS_SECRET_ACCESS_KEY  Item:
+#                        op://CoS-Dispatcher/r2-bucket-credentials/secret-access-key
+
+app            = "cos-log-shipper"
+primary_region = "syd"
+
+[build]
+  image = "ghcr.io/superfly/fly-log-shipper:latest"
+
+[env]
+  # Fly org slug — log firehose is per-org. Personal org per Phase B.2.
+  ORG = "personal"
+
+  # Enable S3 sink (R2 is S3-compatible). The fly-log-shipper image reads
+  # this flag and provisions the S3-shaped Vector sink.
+  S3      = "true"
+  BUCKET  = "cos-backups"
+  REGION  = "auto"
+
+  # R2 endpoint — same as the dispatcher uses. Bucket lives in the OC region.
+  # Operator confirms exact value when populating r2-bucket-credentials in B.3.
+  S3_ENDPOINT = "https://8c5cd8a00f4e63eedf9a0a5b27da03c2.r2.cloudflarestorage.com"
+
+  # Path prefix and partitioning. Vector renders the date components from
+  # the log timestamp into the key. The trailing slash matters — without it
+  # Vector treats "logs" as a filename prefix.
+  KEY_PREFIX  = "logs/%Y/%m/%d/"
+  COMPRESSION = "gzip"
+
+[[vm]]
+  # The shipper is light — shared CPU is plenty.
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
+# No HTTP service — the shipper is a one-way egress process and exposes
+# nothing on the public internet.

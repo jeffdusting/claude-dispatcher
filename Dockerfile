@@ -16,7 +16,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     rsync \
     tini \
+    age \
   && rm -rf /var/lib/apt/lists/*
+
+# ── rclone ────────────────────────────────────────────────────────────────────
+# B.3 backup uploader. R2 is S3-compatible; rclone has a native R2 preset and
+# is a single Go binary with no Python dependency.
+RUN curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rclone.zip \
+  && unzip -j /tmp/rclone.zip 'rclone-*-linux-amd64/rclone' -d /usr/local/bin/ \
+  && chmod +x /usr/local/bin/rclone \
+  && rm /tmp/rclone.zip \
+  && rclone --version | head -1
+
+# ── supercronic ───────────────────────────────────────────────────────────────
+# B.3 hourly cron driver. Single Go binary; logs to stdout (Fly captures it);
+# does not fork a daemon (compatible with tini PID 1 + bun foreground).
+ARG SUPERCRONIC_VERSION=0.2.32
+ARG SUPERCRONIC_SHA1=7da26ce6ab48d75e97f7204554afe7c80779d4e0
+RUN curl -fsSL "https://github.com/aptible/supercronic/releases/download/v${SUPERCRONIC_VERSION}/supercronic-linux-amd64" \
+      -o /usr/local/bin/supercronic \
+  && echo "${SUPERCRONIC_SHA1}  /usr/local/bin/supercronic" | sha1sum -c - \
+  && chmod +x /usr/local/bin/supercronic \
+  && supercronic -version 2>&1 | head -1
 
 # ── 1Password CLI ─────────────────────────────────────────────────────────────
 # Installed from the official 1Password apt repo (stable channel).
@@ -77,8 +98,10 @@ COPY --from=kb . /app/knowledge-base/
 EXPOSE 8080
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
-# tini runs as PID 1 and execs entrypoint.sh, which in turn execs `bun run
-# src/index.ts`. t06 will add 1Password secret-fetch logic before the exec.
-RUN chmod +x /app/entrypoint.sh
+# tini runs as PID 1 and execs entrypoint.sh. The entrypoint fetches secrets
+# from 1Password (via the service-account token in OP_SERVICE_ACCOUNT_TOKEN),
+# starts supercronic in the background for the hourly backup cron, then execs
+# `bun run src/index.ts`.
+RUN chmod +x /app/entrypoint.sh /app/scripts/backup.sh
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/app/entrypoint.sh"]
