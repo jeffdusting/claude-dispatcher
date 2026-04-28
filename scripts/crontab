@@ -1,0 +1,7 @@
+# Supercronic crontab for the dispatcher container.
+# Format is standard cron: minute hour day month dow command.
+# Supercronic logs each invocation to stdout, which Fly captures.
+#
+# Hourly backup of STATE_DIR to R2, with verification round-trip.
+# Per Migration Plan §5.2.1 / Architecture v2.1 §5.3.
+0 * * * * /app/scripts/backup.sh

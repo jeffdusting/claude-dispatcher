@@ -23,6 +23,14 @@ primary_region = "syd"
   ATTACHMENT_DIR  = "/data/attachments"
   NODE_ENV        = "production"
 
+  # B.3 R2 backup. Public values only. Private values (age private key,
+  # R2 access keys) come from 1Password at boot via entrypoint.sh.
+  # Public key is paired with the private half stored in
+  # op://CoS-Dispatcher/backup-age-key/credential. The pair must match —
+  # rotating the keypair is a Phase G runbook item.
+  BACKUP_AGE_PUBLIC_KEY = "age12ezyd77jp8cc4l7ypf0xwpz45x5y9u3j6vcpxeahshscn0ry9p9qunv2z4"
+  R2_BUCKET             = "cos-backups"
+
 [http_service]
   internal_port = 8080
   # Discord bots receive gateway events asynchronously — the machine must be
