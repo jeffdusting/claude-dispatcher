@@ -1,0 +1,75 @@
+# Fly.io deployment — Chief of Staff dispatcher (STAGING)
+# App: cos-dispatcher-staging  |  Region: syd  |  Single staging machine
+#
+# Near-mirror of fly.toml (production). Differences are intentional and
+# enumerated here so the diff is auditable:
+#   1. app           = "cos-dispatcher-staging"  (B.7 substrate)
+#   2. [[mounts]]    source = "cos_state_staging"  initial_size = "1gb"
+#   3. [[vm]]        size = "shared-cpu-2x"  (smaller — staging is for
+#                    validation, not load)
+#   4. [env]         DISPATCHER_ROLE = "spare"  — skips Discord connect()
+#                    and gates scheduled cron paths in src/index.ts so
+#                    staging cannot post into the production Discord
+#                    workspace. Health server, integrations probe, and
+#                    worker registry boot still run.
+#   5. [env]         BACKUP_KEY_PREFIX = "staging-test"  — segregates
+#                    staging backup objects in the shared cos-backups R2
+#                    bucket so staging never overwrites or interleaves
+#                    with the production state/ key namespace.
+# Public env values match production (paths, age public key, R2 bucket);
+# private values come from 1Password at boot via entrypoint.sh.
+
+app            = "cos-dispatcher-staging"
+primary_region = "syd"
+
+[build]
+
+[env]
+  PROJECT_DIR     = "/app"
+  DISPATCHER_DIR  = "/app"
+  STATE_DIR       = "/data/state"
+  LOG_DIR         = "/data/logs"
+  OUTBOX_DIR      = "/data/outbox"
+  ATTACHMENT_DIR  = "/data/attachments"
+  CLAUDE_BIN      = "/usr/bin/claude"
+  NODE_ENV        = "production"
+
+  # Staging-only overrides
+  DISPATCHER_ROLE   = "spare"
+  BACKUP_KEY_PREFIX = "staging-test"
+
+  # B.3 R2 backup. Same age public key and bucket as production — staging
+  # writes ciphertext under the staging-test/ prefix to keep the namespaces
+  # separate while reusing the bucket and key material.
+  BACKUP_AGE_PUBLIC_KEY = "age12ezyd77jp8cc4l7ypf0xwpz45x5y9u3j6vcpxeahshscn0ry9p9qunv2z4"
+  R2_BUCKET             = "cos-backups"
+
+[http_service]
+  internal_port = 8080
+  auto_stop_machines  = false
+  auto_start_machines = false
+  min_machines_running = 1
+  force_https = true
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval     = "30s"
+    method       = "GET"
+    path         = "/health"
+    timeout      = "5s"
+
+[deploy]
+  wait_timeout = "120s"
+
+# VM: shared-cpu-2x — smaller than production's performance-2x. Staging
+# carries no real traffic; the spare-mode dispatcher does periodic health
+# probes and the supercronic backup tick. 2 GB memory is sufficient.
+[[vm]]
+  size = "shared-cpu-2x"
+
+# Persistent volume — 1 GB matches B.7 substrate. Distinct from production's
+# cos_state to keep the two state trees fully isolated.
+[[mounts]]
+  source       = "cos_state_staging"
+  destination  = "/data"
+  initial_size = "1gb"

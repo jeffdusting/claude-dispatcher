@@ -31,9 +31,16 @@ import {
   PROJECTS_DIR,
 } from '../src/projects.js'
 
-const CLAUDE_BIN = join(homedir(), '.local', 'bin', 'claude')
-const PROJECT_DIR = join(homedir(), 'claude-workspace', 'generic')
-const FINALISE_SCRIPT = join(PROJECT_DIR, 'dispatcher', 'scripts', 'worker-finalise.ts')
+// Cloud overrides via env (Phase A.4 path discipline). Laptop defaults match
+// the original layout. CLAUDE_BIN: laptop installer puts it under
+// ~/.local/bin/claude; the cloud Dockerfile installs it via `npm install -g`
+// which lands at /usr/bin/claude on Debian. PROJECT_DIR / DISPATCHER_DIR
+// match the env vars set in fly.toml so spawn cwd and worker-finalise.ts
+// path resolve to /app inside the container.
+const CLAUDE_BIN = process.env.CLAUDE_BIN || join(homedir(), '.local', 'bin', 'claude')
+const PROJECT_DIR = process.env.PROJECT_DIR || join(homedir(), 'claude-workspace', 'generic')
+const DISPATCHER_DIR = process.env.DISPATCHER_DIR || join(PROJECT_DIR, 'dispatcher')
+const FINALISE_SCRIPT = join(DISPATCHER_DIR, 'scripts', 'worker-finalise.ts')
 
 const DEFAULT_ALLOWED_TOOLS = [
   'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash',
