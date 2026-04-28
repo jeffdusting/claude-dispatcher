@@ -198,11 +198,13 @@ If the work matches **Mode 2** (belongs to CBS Group or WaterRoads), use Papercl
 Run the kickoff script via Bash. It creates the project record, creates a dedicated Discord thread under the same parent channel as your current thread, and drops a kickoff request for the dispatcher to stand up the PM.
 
 ```bash
-bun run ~/claude-workspace/generic/dispatcher/scripts/kickoff-project.ts \
+bun run "$DISPATCHER_DIR/scripts/kickoff-project.ts" \
   --name "Short project name" \
   --brief "Full brief — include all context the PM needs to decompose the work" \
   --origin-thread "<your current thread id>"
 ```
+
+`DISPATCHER_DIR` is set by the dispatcher process and inherited by every spawned worker (laptop default `~/claude-workspace/generic/dispatcher`; Fly container `/app`).
 
 Your current thread ID is in the `<channel>` tag of Jeff's message (`thread_id="..."`).
 
@@ -229,8 +231,8 @@ Example reply:
 
 ### Project lifecycle
 
-- **Active**: `state/projects/<id>.json`
-- **Archived on completion**: `state/projects/archive/<id>.json`
+- **Active**: `$STATE_DIR/projects/<id>.json`
+- **Archived on completion**: `$STATE_DIR/projects/archive/<id>.json`
 
 If Jeff asks about a past project, read the archive.
 
@@ -281,7 +283,7 @@ You run under a Discord dispatcher that spawns a fresh process for each message.
 **How to schedule a continuation (before you end your response):**
 
 ```bash
-~/claude-workspace/generic/dispatcher/scripts/continue_when.sh \
+"$DISPATCHER_DIR/scripts/continue_when.sh" \
   --delay 900 \
   --reason "continuing build of Stage 2 of Alex Morgan runtime" \
   --prompt "Continue building the Alex Morgan shadow-mode review helper. Stage 1 is done. Refer to the todo list."
@@ -314,12 +316,10 @@ The dispatcher will:
 
 ## Key Reference Locations
 
-- River project: `~/Desktop/"Projects 2"/River/`
-- Agent instructions: `~/Desktop/"Projects 2"/River/agent-instructions/`
-- Agent roster: `~/Desktop/"Projects 2"/River/docs/agent-roster.md`
-- Scripts: `~/Desktop/"Projects 2"/River/scripts/`
-- Knowledge base: `~/Desktop/"Projects 2"/River/knowledge-base/`
-- Paperclip user guide: `~/Desktop/"Projects 2"/River/Paperclip user guide/`
-- Dispatcher source: `~/claude-workspace/generic/dispatcher/`
-- Project records: `~/claude-workspace/generic/dispatcher/state/projects/`
+The dispatcher resolves source and state paths via env vars (`DISPATCHER_DIR`, `STATE_DIR`) so the same prompt works on the laptop and inside the Fly container. Use the env-var form in scripts and Read calls; a literal default is provided where useful for reading.
+
+- Dispatcher source: `$DISPATCHER_DIR` (laptop default `~/claude-workspace/generic/dispatcher/`; Fly container `/app/`)
+- Project records: `$STATE_DIR/projects/` (laptop default `~/claude-workspace/generic/dispatcher/state/projects/`; Fly volume `/data/state/projects/`)
+- Agent roster: defined inline in this prompt under "River Organisation Structure" and the Agent IDs tables. Agent behaviours are managed via the Paperclip UI; there is no filesystem source for individual agent instructions.
+- Knowledge base: queried at runtime via the `supabase-query` skill against the per-entity Supabase pgvector tables. The KB has no filesystem path.
 - Paperclip auth credentials: 1Password vault item `op://CoS-Dispatcher/paperclip-auth` (fields `username`, `password`); service URL is `https://org.cbslab.app`
