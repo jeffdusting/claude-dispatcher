@@ -77,7 +77,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 # root, so the long-running bun process and its claude subprocesses must run
 # as a non-root user. The entrypoint stays root briefly to chown the Fly
 # volume mount and fetch 1Password secrets, then drops privileges via gosu.
-RUN useradd --uid 1000 --create-home --home-dir /home/dispatcher --shell /bin/bash dispatcher
+#
+# The oven/bun base image already ships a `bun` user at UID 1000. Rename the
+# existing user (and matching group) to `dispatcher` and relocate its home to
+# /home/dispatcher rather than allocating a second account at the same UID.
+# entrypoint.sh exports HOME=/home/dispatcher explicitly to match.
+RUN usermod -l dispatcher -d /home/dispatcher -m -s /bin/bash bun \
+  && groupmod -n dispatcher bun
 
 WORKDIR /app
 
