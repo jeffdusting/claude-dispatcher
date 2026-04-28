@@ -140,21 +140,21 @@ Spending limit: the operator's Codespaces spending cap is set to USD 20/month pe
 
 ### Cloud (Fly.io, production)
 
-The image is built with the knowledge base supplied as a named build context:
-
-```bash
-docker build \
-  --build-context kb=/Users/jeffdusting/Desktop/Projects2/River \
-  -t cos-dispatcher .
-```
-
-Deploy:
+Deploy directly from the dispatcher repo with Fly's remote builder:
 
 ```bash
 fly deploy
 ```
 
-The Fly machine runs the image directly. `tini` is PID 1; it execs `entrypoint.sh`, which fetches secrets from 1Password (Phase B.4) and execs `bun run src/index.ts`. The Fly platform handles restart on crash and SIGTERM on deploy. There is no `start.sh` in the cloud path — supervision is single-layer via the Fly machine.
+The image carries no baked knowledge-base layer. River KB content is read at runtime via Supabase pgvector with Voyage embeddings (architecture v2.1 §3.5); the dispatcher process itself does not read from `/app/knowledge-base/`.
+
+The Fly machine runs the image directly. `tini` is PID 1; it execs `entrypoint.sh` as root, which chowns `/data` for the `dispatcher` user, fetches secrets from 1Password, starts supercronic in the background under `dispatcher`, then drops privileges via `gosu` and execs `bun run src/index.ts` as `dispatcher` (UID 1000). The non-root user is required because `claude` refuses `--permission-mode bypassPermissions` for root. The Fly platform handles restart on crash and SIGTERM on deploy. There is no `start.sh` in the cloud path — supervision is single-layer via the Fly machine.
+
+Staging deploys use the same Dockerfile and a separate `fly.staging.toml`:
+
+```bash
+fly deploy --config fly.staging.toml --app cos-dispatcher-staging --remote-only
+```
 
 ### Laptop (development)
 

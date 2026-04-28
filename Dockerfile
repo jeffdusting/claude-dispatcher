@@ -7,6 +7,10 @@ FROM oven/bun:1.3.12
 # tini reaps zombies and forwards signals so bun (PID > 1) gets clean SIGTERM
 # from Fly during deploys/restarts; without it, the dispatcher's child Claude
 # Code subprocesses can be left orphaned on shutdown.
+# gosu drops privileges from the root entrypoint to the unprivileged
+# `dispatcher` user before exec'ing bun. Required because the claude CLI
+# refuses --permission-mode bypassPermissions when its parent process runs
+# as root (Phase E.1 prerequisite).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
@@ -17,7 +21,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rsync \
     tini \
     age \
-  && rm -rf /var/lib/apt/lists/*
+    gosu \
+  && rm -rf /var/lib/apt/lists/* \
+  && gosu --version | head -1
 
 # ── rclone ────────────────────────────────────────────────────────────────────
 # B.3 backup uploader. R2 is S3-compatible; rclone has a native R2 preset and
@@ -66,6 +72,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
   && npm install -g @anthropic-ai/claude-code \
   && claude --version
 
+# ── Non-root user ─────────────────────────────────────────────────────────────
+# UID 1000 / GID 1000. claude refuses --permission-mode bypassPermissions for
+# root, so the long-running bun process and its claude subprocesses must run
+# as a non-root user. The entrypoint stays root briefly to chown the Fly
+# volume mount and fetch 1Password secrets, then drops privileges via gosu.
+RUN useradd --uid 1000 --create-home --home-dir /home/dispatcher --shell /bin/bash dispatcher
+
 WORKDIR /app
 
 # ── App dependencies ──────────────────────────────────────────────────────────
@@ -77,31 +90,21 @@ RUN bun install --production
 # ── Source code ───────────────────────────────────────────────────────────────
 COPY . .
 
-# ── Knowledge base ────────────────────────────────────────────────────────────
-# Bake the River knowledge base from a named external build context.
-#
-# Build command:
-#   docker build \
-#     --build-context kb=/Users/jeffdusting/Desktop/Projects2/River \
-#     -t cos-dispatcher .
-#
-# The kb path must contain (at minimum):
-#   knowledge-base/
-#   agent-roster/  (or agent-config/ / agent-instructions/ if renamed)
-#   Paperclip user guide/
-#
-# For local testing without the KB (healthcheck smoke-test only):
-#   mkdir -p /tmp/empty-kb && docker build --build-context kb=/tmp/empty-kb -t cos-dispatcher .
-COPY --from=kb . /app/knowledge-base/
+# Knowledge-base note: the architecture (v2.1 §3.5) accesses River KB content
+# at runtime via Supabase pgvector with Voyage embeddings. The dispatcher
+# itself does not read from any baked /app/knowledge-base/ path; the prior
+# `COPY --from=kb` build-context step was removed in the Phase E.1 cleanup.
+
+RUN chmod +x /app/entrypoint.sh /app/scripts/backup.sh \
+  && chown -R dispatcher:dispatcher /app
 
 # ── Healthcheck port ──────────────────────────────────────────────────────────
 EXPOSE 8080
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
-# tini runs as PID 1 and execs entrypoint.sh. The entrypoint fetches secrets
-# from 1Password (via the service-account token in OP_SERVICE_ACCOUNT_TOKEN),
-# starts supercronic in the background for the hourly backup cron, then execs
-# `bun run src/index.ts`.
-RUN chmod +x /app/entrypoint.sh /app/scripts/backup.sh
+# tini runs as PID 1 and execs entrypoint.sh as root. The entrypoint chowns
+# /data so the dispatcher user owns the Fly volume tree, fetches secrets from
+# 1Password, starts supercronic in the background, then exec's bun under the
+# dispatcher user via gosu.
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/app/entrypoint.sh"]
