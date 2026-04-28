@@ -28,40 +28,48 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib import request, error
 
 HOME = Path.home()
-SECRETS = HOME / "claude-workspace" / "generic" / ".secrets" / "paperclip-auth.env"
 BACKUP_DIR = HOME / "claude-workspace" / "generic" / "dispatcher" / "state"
 BACKUP_FILE = BACKUP_DIR / f"leo-heartbeat-backup-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
 
 CBS_COMPANY_ID = "fafce870-b862-4754-831e-2cd10e8b203c"
 TARGET_INTERVAL_SEC = 900  # 15 minutes
 
-
-def load_env(p: Path) -> dict[str, str]:
-    out: dict[str, str] = {}
-    if not p.exists():
-        return out
-    for line in p.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        m = re.match(r"([A-Z_][A-Z0-9_]*)=(.*)", line)
-        if m:
-            out[m.group(1)] = m.group(2).strip().strip('"').strip("'")
-    return out
+# Paperclip URL is hardcoded (matches B-007 chief-of-staff.md fix). Email and
+# password fetched from 1Password via `op read`. Laptop relies on the
+# 1Password 8 desktop app integration; cloud uses the staged
+# OP_SERVICE_ACCOUNT_TOKEN.
+PAPERCLIP_URL = "https://org.cbslab.app"
 
 
-ENV = load_env(SECRETS)
-PAPERCLIP_URL = ENV.get("PAPERCLIP_URL", "").rstrip("/")
-EMAIL = ENV.get("PAPERCLIP_EMAIL", "")
-PASSWORD = ENV.get("PAPERCLIP_PASSWORD", "")
-if not PAPERCLIP_URL or not EMAIL or not PASSWORD:
-    print("FATAL: missing Paperclip credentials", file=sys.stderr)
+def op_read(ref: str) -> str:
+    # Timeout is generous because the laptop's 1Password 8 desktop
+    # integration may prompt for Touch ID on the first call after the auth
+    # cache (~30 min) expires. Subsequent calls within the cache window
+    # complete in <100 ms. Cloud uses OP_SERVICE_ACCOUNT_TOKEN which never
+    # prompts.
+    res = subprocess.run(
+        ["op", "read", ref],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if res.returncode != 0:
+        raise RuntimeError(f"op read {ref} failed: {res.stderr.strip()}")
+    return res.stdout.strip()
+
+
+try:
+    EMAIL = op_read("op://CoS-Dispatcher/paperclip-auth/username")
+    PASSWORD = op_read("op://CoS-Dispatcher/paperclip-auth/password")
+except Exception as e:
+    print(f"FATAL: missing Paperclip credentials ({e})", file=sys.stderr)
     sys.exit(1)
 
 
