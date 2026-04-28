@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import traceback
@@ -34,7 +35,6 @@ from urllib import request, error
 # -----------------------------------------------------------------------------
 
 HOME = Path.home()
-PAPERCLIP_ENV = HOME / "claude-workspace" / "generic" / ".secrets" / "paperclip-auth.env"
 DISCORD_ENV = HOME / ".claude" / "channels" / "discord" / ".env"
 STATE_FILE = HOME / "claude-workspace" / "generic" / "dispatcher" / "state" / "leo-monitor.json"
 
@@ -44,6 +44,15 @@ CBSA_121_ID = "7a058380-e222-45f3-90d4-0dfa63abecfa"
 
 STALL_HOURS = 18
 ACTIVE_STATUSES = {"todo", "in_progress", "blocked"}
+
+# Paperclip URL is hardcoded (matches B-007 chief-of-staff.md fix). Email and
+# password fetched from 1Password via `op read`. On the laptop, this delegates
+# to the 1Password 8 desktop app integration; on cloud (cos-dispatcher,
+# cos-dispatcher-staging) it uses the staged OP_SERVICE_ACCOUNT_TOKEN.
+# Pre-condition: 1Password 8 desktop must be signed in for launchd-scheduled
+# runs to succeed; failure mode is `op read` exit non-zero, captured to the
+# launchd StandardErrorPath log.
+PAPERCLIP_URL = "https://org.cbslab.app"
 
 # -----------------------------------------------------------------------------
 # Env loading
@@ -63,12 +72,24 @@ def load_env(path: Path) -> dict[str, str]:
     return out
 
 
-PAPERCLIP = load_env(PAPERCLIP_ENV)
-DISCORD = load_env(DISCORD_ENV)
+def op_read(ref: str) -> str:
+    # Timeout is generous because the laptop's 1Password 8 desktop
+    # integration may prompt for Touch ID on the first call after the auth
+    # cache (~30 min) expires. Subsequent calls within the cache window
+    # complete in <100 ms. Cloud uses OP_SERVICE_ACCOUNT_TOKEN which never
+    # prompts.
+    res = subprocess.run(
+        ["op", "read", ref],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if res.returncode != 0:
+        raise RuntimeError(f"op read {ref} failed: {res.stderr.strip()}")
+    return res.stdout.strip()
 
-PAPERCLIP_URL = PAPERCLIP.get("PAPERCLIP_URL", "").rstrip("/")
-PAPERCLIP_EMAIL = PAPERCLIP.get("PAPERCLIP_EMAIL", "")
-PAPERCLIP_PASSWORD = PAPERCLIP.get("PAPERCLIP_PASSWORD", "")
+
+DISCORD = load_env(DISCORD_ENV)
 DISCORD_BOT_TOKEN = DISCORD.get("DISCORD_BOT_TOKEN", "")
 
 
@@ -77,8 +98,11 @@ def fail(msg: str) -> None:
     sys.exit(1)
 
 
-if not PAPERCLIP_URL or not PAPERCLIP_EMAIL or not PAPERCLIP_PASSWORD:
-    fail(f"missing Paperclip creds in {PAPERCLIP_ENV}")
+try:
+    PAPERCLIP_EMAIL = op_read("op://CoS-Dispatcher/paperclip-auth/username")
+    PAPERCLIP_PASSWORD = op_read("op://CoS-Dispatcher/paperclip-auth/password")
+except Exception as e:
+    fail(f"missing Paperclip creds via op read: {e}")
 if not DISCORD_BOT_TOKEN:
     fail(f"missing DISCORD_BOT_TOKEN in {DISCORD_ENV}")
 
