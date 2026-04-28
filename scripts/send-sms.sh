@@ -28,10 +28,12 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SECRETS_DIR="$(cd "${SCRIPT_DIR}/../../.secrets" && pwd)"
-TWILIO_ENV="${SECRETS_DIR}/twilio-alex-morgan.env"
-CONTACTS_ENV="${SECRETS_DIR}/sms-contacts.env"
+# Credentials are read from 1Password via the `op` CLI:
+#   op://CoS-Dispatcher/twilio/{account-sid,auth-token,from-number}
+#   op://CoS-Dispatcher/twilio-contacts/<name>-mobile
+#
+# Authentication: laptop uses the 1Password 8 desktop integration;
+# Fly machines source OP_SERVICE_ACCOUNT_TOKEN via the staged secret.
 
 usage() {
   sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -62,16 +64,20 @@ if [[ -z "${TO}" || -z "${MESSAGE}" ]]; then
   usage 1
 fi
 
-# --- Load Twilio credentials ---
-if [[ ! -f "${TWILIO_ENV}" ]]; then
-  echo "ERROR: Twilio env not found at ${TWILIO_ENV}" >&2
+# --- Load Twilio credentials from 1Password ---
+if ! command -v op >/dev/null 2>&1; then
+  echo "ERROR: 'op' CLI not found on PATH." >&2
+  echo "       Install via: brew install --cask 1password-cli" >&2
   exit 1
 fi
-# shellcheck disable=SC1090
-set -a; source "${TWILIO_ENV}"; set +a
 
-if [[ -z "${TWILIO_ACCOUNT_SID:-}" || -z "${TWILIO_AUTH_TOKEN:-}" || -z "${TWILIO_FROM_NUMBER:-}" ]]; then
-  echo "ERROR: Twilio creds incomplete in ${TWILIO_ENV}" >&2
+TWILIO_ACCOUNT_SID="$(op read "op://CoS-Dispatcher/twilio/account-sid" 2>/dev/null || true)"
+TWILIO_AUTH_TOKEN="$(op read "op://CoS-Dispatcher/twilio/auth-token" 2>/dev/null || true)"
+TWILIO_FROM_NUMBER="$(op read "op://CoS-Dispatcher/twilio/from-number" 2>/dev/null || true)"
+
+if [[ -z "${TWILIO_ACCOUNT_SID}" || -z "${TWILIO_AUTH_TOKEN}" || -z "${TWILIO_FROM_NUMBER}" ]]; then
+  echo "ERROR: Twilio credentials missing from op://CoS-Dispatcher/twilio." >&2
+  echo "       Ensure 'op' is signed in (laptop: 1Password 8 app focused; Fly: OP_SERVICE_ACCOUNT_TOKEN set)." >&2
   exit 1
 fi
 
@@ -79,21 +85,12 @@ fi
 if [[ "${TO}" =~ ^\+[0-9]{8,15}$ ]]; then
   TO_NUMBER="${TO}"
 else
-  if [[ ! -f "${CONTACTS_ENV}" ]]; then
-    echo "ERROR: Contacts env not found at ${CONTACTS_ENV}" >&2
-    exit 1
-  fi
-  # shellcheck disable=SC1090
-  set -a; source "${CONTACTS_ENV}"; set +a
-
-  # Named lookup: "jeff" -> $JEFF_MOBILE, "sarah" -> $SARAH_MOBILE, etc.
-  VAR_NAME="$(echo "${TO}" | tr '[:lower:]' '[:upper:]')_MOBILE"
-  TO_NUMBER="${!VAR_NAME:-}"
+  TO_LOWER="$(echo "${TO}" | tr '[:upper:]' '[:lower:]')"
+  TO_NUMBER="$(op read "op://CoS-Dispatcher/twilio-contacts/${TO_LOWER}-mobile" 2>/dev/null || true)"
 
   if [[ -z "${TO_NUMBER}" ]]; then
     echo "ERROR: No mobile configured for '${TO}'." >&2
-    echo "       Expected env var ${VAR_NAME} in ${CONTACTS_ENV}" >&2
-    echo "       Add a line like: ${VAR_NAME}=+61XXXXXXXXX" >&2
+    echo "       Expected vault field op://CoS-Dispatcher/twilio-contacts/${TO_LOWER}-mobile" >&2
     exit 1
   fi
 fi
