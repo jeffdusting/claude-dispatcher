@@ -111,6 +111,31 @@ bun install
 
 No further configuration is required for the laptop default — the dispatcher reads the existing bot token and access config from `~/.claude/channels/discord/`. To run cloud-style locally, export the env vars from the table above.
 
+### Development with Codespaces (Phase D)
+
+Codespaces is the recommended development environment when the laptop is unavailable. The repository ships a devcontainer at `.devcontainer/devcontainer.json` that installs:
+
+- Bun pinned to 1.3.12 (matches the production image — Phase A.3).
+- Node.js LTS for the Claude Code CLI and miscellaneous tooling.
+- Python 3.11 with `pip` for ad-hoc scripts.
+- `age` for backup encryption (Phase B.2).
+- The 1Password CLI (`op`) for secret resolution.
+- `flyctl` for Fly.io operations.
+- The `gcloud` CLI for Google service-account work.
+
+Open a Codespace from the GitHub repo `<>` Code menu. The post-create script runs `bun install` automatically; once it finishes:
+
+```bash
+bun test       # full suite — verifies the Codespace is wired correctly
+bun run src/index.ts
+```
+
+Codespaces secrets configured at the user-account level **must be test credentials only** (Phase D §7.2). Production secrets remain in 1Password and are read by the Fly-deployed dispatcher via `OP_SERVICE_ACCOUNT_TOKEN`; do not stage production tokens in Codespaces.
+
+Codespace lifetime: see the §S-010 note below — Codespaces are deleted after 30 days of inactivity. Commit and push regularly.
+
+Spending limit: the operator's Codespaces spending cap is set to USD 20/month per Migration Plan §7.3 / OD-007.
+
 ## Running
 
 ### Cloud (Fly.io, production)
