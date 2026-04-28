@@ -51,11 +51,35 @@ export R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ENDPOINT
 : "${R2_BUCKET:=cos-backups}"
 export R2_BUCKET
 
+# ── Anthropic API key ────────────────────────────────────────────────────────
+# Inherited by every claude subprocess the dispatcher spawns. Without this the
+# Claude CLI inside the worker cannot authenticate (laptop relies on Claude
+# Code's interactive OAuth state in $HOME/.claude/; the cloud container has
+# no interactive login path so the API-key env var is the only option).
+ANTHROPIC_API_KEY=$(op read "op://CoS-Dispatcher/anthropic-api/credential")
+export ANTHROPIC_API_KEY
+
 # ── Drop privileges ──────────────────────────────────────────────────────────
 # HOME must be set explicitly: gosu propagates the parent environ but does
 # not synthesise HOME for the target user. claude and bun both read $HOME
 # (claude writes to $HOME/.claude/, bun caches under $HOME/.bun).
 export HOME=/home/dispatcher
+
+# ── Discord bot token ────────────────────────────────────────────────────────
+# config.ts loadToken() reads DISCORD_BOT_TOKEN from $HOME/.claude/channels/
+# discord/.env (the Discord plugin's existing layout). Write the file from
+# 1Password before launching the dispatcher so the module-import-time
+# loadToken() call resolves cleanly in primary mode. 0700 dir / 0600 file,
+# owned by the dispatcher user.
+DISCORD_ENV_DIR="${HOME}/.claude/channels/discord"
+DISCORD_ENV_FILE="${DISCORD_ENV_DIR}/.env"
+mkdir -p "${DISCORD_ENV_DIR}"
+DISCORD_BOT_TOKEN_VAL=$(op read "op://CoS-Dispatcher/discord-bot/credential")
+printf 'DISCORD_BOT_TOKEN=%s\n' "${DISCORD_BOT_TOKEN_VAL}" > "${DISCORD_ENV_FILE}"
+unset DISCORD_BOT_TOKEN_VAL
+chown -R dispatcher:dispatcher "${HOME}/.claude"
+chmod 700 "${DISCORD_ENV_DIR}"
+chmod 600 "${DISCORD_ENV_FILE}"
 
 # ── Supercronic ──────────────────────────────────────────────────────────────
 # Run under the dispatcher user so backup.sh writes to /data as the same user
