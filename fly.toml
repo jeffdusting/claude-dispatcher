@@ -21,6 +21,10 @@ primary_region = "syd"
   LOG_DIR         = "/data/logs"
   OUTBOX_DIR      = "/data/outbox"
   ATTACHMENT_DIR  = "/data/attachments"
+  # Claude Code CLI installed via `npm install -g @anthropic-ai/claude-code`
+  # lands at /usr/bin/claude on the Debian-based bun image. The laptop default
+  # in scripts/spawn-worker.ts is ~/.local/bin/claude.
+  CLAUDE_BIN      = "/usr/bin/claude"
   NODE_ENV        = "production"
 
   # B.3 R2 backup. Public values only. Private values (age private key,

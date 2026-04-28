@@ -37,7 +37,10 @@ BACKUP_VERIFY_DIR="${BACKUP_VERIFY_DIR:-/dev/shm/backup-verify}"
 
 NOW_TS=$(date -u +%Y%m%dT%H%M%SZ)
 DATE_PATH=$(date -u +%Y/%m/%d/%H-%M-%S)
-KEY="state/${DATE_PATH}.tar.age"
+# BACKUP_KEY_PREFIX defaults to "state" (production behaviour). Staging
+# overrides via fly.staging.toml [env] so staging snapshots land under
+# staging-test/ in the shared cos-backups bucket.
+KEY="${BACKUP_KEY_PREFIX:-state}/${DATE_PATH}.tar.age"
 TMP=$(mktemp -d)
 TARFILE="${TMP}/state.tar"
 CIPHER="${TMP}/state.tar.age"

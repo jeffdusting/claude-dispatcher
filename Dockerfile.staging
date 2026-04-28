@@ -1,0 +1,77 @@
+# syntax=docker/dockerfile:1
+#
+# Staging Dockerfile (Phase E.0). Mirrors the production Dockerfile in every
+# respect except the knowledge-base layer: production uses a named build
+# context (`--build-context kb=...`) which flyctl's remote builder does not
+# expose through the deploy command, and the operator's machine has no local
+# Docker runtime. Staging instead bakes an empty /app/knowledge-base/ —
+# enough to verify the deploy plumbing, the health endpoints, the op CLI,
+# the R2 backup path, and the worker spawn path. Real KB content is not
+# exercised by the E.0 smoke test (no inbound Discord traffic, DISPATCHER_ROLE
+# is "spare").
+#
+# Producton (Phase E.1) keeps the named-context Dockerfile; the operator
+# decision before E.1 is whether to install Docker locally for the named-
+# context build, embed the KB into the dispatcher repo via .gitignore-listed
+# directory, or move to a registry-fed KB volume. Tracked under "Plan
+# deviations needed" in TASK_LOG.
+
+FROM oven/bun:1.3.12
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    unzip \
+    jq \
+    git \
+    gnupg \
+    rsync \
+    tini \
+    age \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rclone.zip \
+  && unzip -j /tmp/rclone.zip 'rclone-*-linux-amd64/rclone' -d /usr/local/bin/ \
+  && chmod +x /usr/local/bin/rclone \
+  && rm /tmp/rclone.zip \
+  && rclone --version | head -1
+
+ARG SUPERCRONIC_VERSION=0.2.32
+ARG SUPERCRONIC_SHA1=7da26ce6ab48d75e97f7204554afe7c80779d4e0
+RUN curl -fsSL "https://github.com/aptible/supercronic/releases/download/v${SUPERCRONIC_VERSION}/supercronic-linux-amd64" \
+      -o /usr/local/bin/supercronic \
+  && echo "${SUPERCRONIC_SHA1}  /usr/local/bin/supercronic" | sha1sum -c - \
+  && chmod +x /usr/local/bin/supercronic \
+  && supercronic -version 2>&1 | head -1
+
+RUN curl -sS https://downloads.1password.com/linux/keys/1password.asc \
+      | gpg --dearmor \
+      | tee /usr/share/keyrings/1password-archive-keyring.gpg > /dev/null \
+  && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/amd64 stable main" \
+      | tee /etc/apt/sources.list.d/1password.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends 1password-cli \
+  && rm -rf /var/lib/apt/lists/* \
+  && op --version
+
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+  && apt-get install -y --no-install-recommends nodejs \
+  && rm -rf /var/lib/apt/lists/* \
+  && npm install -g @anthropic-ai/claude-code \
+  && claude --version
+
+WORKDIR /app
+
+COPY package.json bun.lock ./
+RUN bun install --production
+
+COPY . .
+
+# Empty KB for staging — see header comment.
+RUN mkdir -p /app/knowledge-base
+
+EXPOSE 8080
+
+RUN chmod +x /app/entrypoint.sh /app/scripts/backup.sh
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/app/entrypoint.sh"]
