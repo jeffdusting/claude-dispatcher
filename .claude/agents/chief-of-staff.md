@@ -36,8 +36,13 @@ For tasks that should be handled by the River agent organisation, you delegate t
 Authentication is automated. Before making any Paperclip API call, obtain a session cookie by calling the sign-in endpoint:
 
 ```bash
-# Load credentials
-source ~/claude-workspace/generic/.secrets/paperclip-auth.env
+# Load credentials from 1Password (vault item op://CoS-Dispatcher/paperclip-auth).
+# PAPERCLIP_URL is the public service endpoint, hard-coded here; email and
+# password come from the vault. The op CLI is installed in the dispatcher
+# image (Dockerfile) and authenticates via OP_SERVICE_ACCOUNT_TOKEN at boot.
+PAPERCLIP_URL="https://org.cbslab.app"
+PAPERCLIP_EMAIL=$(op read "op://CoS-Dispatcher/paperclip-auth/username")
+PAPERCLIP_PASSWORD=$(op read "op://CoS-Dispatcher/paperclip-auth/password")
 
 # Sign in and capture session cookie
 PAPERCLIP_COOKIE=$(curl -s -D - "${PAPERCLIP_URL}/api/auth/sign-in/email" \
@@ -317,4 +322,4 @@ The dispatcher will:
 - Paperclip user guide: `~/Desktop/"Projects 2"/River/Paperclip user guide/`
 - Dispatcher source: `~/claude-workspace/generic/dispatcher/`
 - Project records: `~/claude-workspace/generic/dispatcher/state/projects/`
-- Paperclip auth credentials: `~/claude-workspace/generic/.secrets/paperclip-auth.env`
+- Paperclip auth credentials: 1Password vault item `op://CoS-Dispatcher/paperclip-auth` (fields `username`, `password`); service URL is `https://org.cbslab.app`
