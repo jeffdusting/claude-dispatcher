@@ -21,6 +21,10 @@ primary_region = "syd"
   LOG_DIR         = "/data/logs"
   OUTBOX_DIR      = "/data/outbox"
   ATTACHMENT_DIR  = "/data/attachments"
+  # Discord access.json on /data so /access slash-command mutations survive
+  # redeploys (B-013). entrypoint.sh seeds the file from 1Password on first
+  # boot only; subsequent boots leave the volume copy alone.
+  ACCESS_FILE     = "/data/discord/access.json"
   # Claude Code CLI installed via `npm install -g @anthropic-ai/claude-code`
   # lands at /usr/bin/claude on the Debian-based bun image. The laptop default
   # in scripts/spawn-worker.ts is ~/.local/bin/claude.

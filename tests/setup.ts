@@ -28,6 +28,10 @@ const tmp = mkdtempSync(join(tmpdir(), 'dispatcher-test-'))
 process.env.STATE_DIR = tmp
 process.env.LOG_DIR = tmp
 process.env.OUTBOX_DIR = tmp
+// ACCESS_FILE under tmp so tests can probe loadAccess()/updateAccess() without
+// touching the operator's real ~/.claude/channels/discord/access.json. The
+// env-override path is the same one the cloud uses (B-013).
+process.env.ACCESS_FILE = join(tmp, 'discord-access.json')
 process.env.DISPATCHER_TEST_MODE = '1'
 
 // Memory thresholds for the A.9.6 sweep tests. Set here (preload) so
