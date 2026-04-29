@@ -303,7 +303,7 @@ dispatcher/
 │   ├── purge-outbox.ts                  # Manifest-gated outbox purge
 │   ├── query-channels.ts                # CLI for the ingested archive
 │   ├── discover-channels.ts             # Channel name cache + listing
-│   └── …                                # leo-monitor, send-sms, state-pull/push, etc.
+│   └── …                                # backup, restore-from-cloud, failover-up, spare-verify-backup, leo-monitor, send-sms, etc.
 ├── docs/
 │   ├── discord-oauth.md      # Constrained scope set per S-011
 │   └── state-schemas.md      # Per-file schema + writer index
