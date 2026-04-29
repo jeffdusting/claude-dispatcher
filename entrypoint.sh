@@ -73,20 +73,38 @@ export HOME=/home/dispatcher
 # owned by the dispatcher user.
 DISCORD_ENV_DIR="${HOME}/.claude/channels/discord"
 DISCORD_ENV_FILE="${DISCORD_ENV_DIR}/.env"
-DISCORD_ACCESS_FILE="${DISCORD_ENV_DIR}/access.json"
 mkdir -p "${DISCORD_ENV_DIR}"
 DISCORD_BOT_TOKEN_VAL=$(op read "op://CoS-Dispatcher/discord-bot/credential")
 printf 'DISCORD_BOT_TOKEN=%s\n' "${DISCORD_BOT_TOKEN_VAL}" > "${DISCORD_ENV_FILE}"
 unset DISCORD_BOT_TOKEN_VAL
-# loadAccess() reads access.json on every inbound message; sweepRetention()
-# reads it on boot (index.ts:193) so the file must exist before primary-mode
-# init runs to completion. The vault holds a pristine copy; runtime
-# mutations via /access on the cloud are NOT persisted across redeploys
-# (B-013 follow-up — move the file onto /data so /access mutations stick).
-op read "op://CoS-Dispatcher/discord-bot/access-config-json" > "${DISCORD_ACCESS_FILE}"
 chown -R dispatcher:dispatcher "${HOME}/.claude"
 chmod 700 "${DISCORD_ENV_DIR}"
-chmod 600 "${DISCORD_ENV_FILE}" "${DISCORD_ACCESS_FILE}"
+chmod 600 "${DISCORD_ENV_FILE}"
+
+# loadAccess() reads access.json on every inbound message; sweepRetention()
+# reads it on boot. The file must exist before primary-mode init runs.
+# B-013: ACCESS_FILE points at /data/discord/access.json (set in fly.toml)
+# so /access slash-command mutations survive redeploys. The vault item
+# discord-bot/access-config-json holds the canonical seed value; we only
+# materialise it on first boot of a new volume — subsequent boots leave the
+# volume copy alone so runtime mutations are preserved. The default falls
+# back to the legacy in-image path so the laptop layout is unchanged.
+ACCESS_FILE="${ACCESS_FILE:-${DISCORD_ENV_DIR}/access.json}"
+ACCESS_DIR=$(dirname "${ACCESS_FILE}")
+mkdir -p "${ACCESS_DIR}"
+chown -R dispatcher:dispatcher "${ACCESS_DIR}"
+chmod 700 "${ACCESS_DIR}"
+if [ ! -s "${ACCESS_FILE}" ]; then
+  echo "[entrypoint] seeding ${ACCESS_FILE} from 1Password (first-boot or empty)"
+  op read "op://CoS-Dispatcher/discord-bot/access-config-json" > "${ACCESS_FILE}"
+  chown dispatcher:dispatcher "${ACCESS_FILE}"
+  chmod 600 "${ACCESS_FILE}"
+else
+  ACCESS_FILE_BYTES=$(stat -c%s "${ACCESS_FILE}" 2>/dev/null || stat -f%z "${ACCESS_FILE}")
+  echo "[entrypoint] ${ACCESS_FILE} present (${ACCESS_FILE_BYTES} bytes) — preserving runtime mutations"
+fi
+# Export so config.ts envOr() picks it up after the gosu privilege drop.
+export ACCESS_FILE
 
 # ── Supercronic ──────────────────────────────────────────────────────────────
 # Run under the dispatcher user so backup.sh writes to /data as the same user

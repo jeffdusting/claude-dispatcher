@@ -33,7 +33,12 @@ export const INGEST_CURSOR_FILE = join(STATE_DIR, 'ingest-cursors.json')
 // Discord plugin state (reuse access config)
 const DISCORD_STATE_DIR = join(homedir(), '.claude', 'channels', 'discord')
 const ENV_FILE = join(DISCORD_STATE_DIR, '.env')
-const ACCESS_FILE = join(DISCORD_STATE_DIR, 'access.json')
+// ACCESS_FILE is mutated at runtime by the /access slash command. On the
+// laptop it lives in the operator's home directory; in the cloud it must
+// live on the /data volume so mutations survive redeploys (B-013). Default
+// keeps the laptop layout unchanged; fly.toml sets the env override.
+// Exported so tests can assert the env override is honoured.
+export const ACCESS_FILE = envOr('ACCESS_FILE', join(DISCORD_STATE_DIR, 'access.json'))
 
 // Role must be defined before loadToken() so it can suppress the throw in spare mode.
 export type DispatcherRole = 'primary' | 'spare'
