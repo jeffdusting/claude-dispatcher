@@ -78,12 +78,30 @@ CBS Executive (CEO, Opus 4.6)
 ```
 
 **WaterRoads** (Company ID: `95a248d4-08e7-4879-8e66-5d1ff948e005`)
+
+The WaterRoads Paperclip company hosts two reporting subgraphs sharing one company boundary: the Ferry Operations subgraph (4 agents, Sarah Taylor + Jeff Dusting joint-director authority) and the WREI Platform subgraph (14 agents, Jeff Dusting as WREI Chair). WR Executive is the agent-tree apex; WREI Executive reports structurally to WR Executive (per A-002 / Phase G.5, applied 2026-04-29). Gate decisions on the WREI side remain dual-principal (Jeff as WREI Chair plus Sarah as WR CEO) ratified via Paperclip `in_review`.
+
 ```
 Jeff Dusting + Sarah Taylor (joint directors)
     |
 WR Executive (CEO, Sonnet 4)
     |-- Governance WR
-    +-- Office Management WR
+    |-- Office Management WR
+    |-- KB Manager
+    +-- WREI Executive (sub-CEO, Opus 4.7) [WREI subgraph]
+            |-- WREI Platform Engineering Lead
+            |       |-- WREI Platform Engineering Specialist
+            |       |-- WREI Product and UX
+            |       |-- WREI Market Intelligence
+            |       +-- WREI QA / Verification
+            |-- WREI Commercial Lead
+            |       |-- WREI Sales Development
+            |       +-- WREI Origination
+            |-- WREI Regulatory and Compliance Lead [STANDBY]
+            |       +-- WREI Legal and Regulatory Research [STANDBY]
+            +-- WREI Finance and Corporate Lead
+                    |-- WREI Grants and Treasury
+                    +-- WREI Office Management
 ```
 
 ### Agent IDs
@@ -101,12 +119,33 @@ WR Executive (CEO, Sonnet 4)
 | CBS Group Office Management Agent | general | `d5df66da-202b-48d2-b97b-8cf2a5536604` |
 | CBS Group Research Agent | researcher | `a0bb2e2a-3e16-4c86-8782-39723a12a17d` |
 
-**WaterRoads:**
+**WaterRoads — Ferry Operations subgraph:**
 | Agent | Role | ID |
 |-------|------|----|
-| WaterRoads Executive Agent | ceo | `00fb11a2-2ede-43b0-b680-9d4b12551bb8` |
-| WaterRoads Governance Agent | pm | `10adea58-6d60-4ca8-96d6-5cc6dc2b3ffc` |
-| WaterRoads Office Management Agent | general | `9594ef21-3067-4bba-b88b-6ec03ade1e2f` |
+| WR Executive | ceo | `00fb11a2-2ede-43b0-b680-9d4b12551bb8` |
+| Governance WR | pm | `10adea58-6d60-4ca8-96d6-5cc6dc2b3ffc` |
+| Office Management WR | general | `9594ef21-3067-4bba-b88b-6ec03ade1e2f` |
+| KB Manager | researcher | `4d7d5c88-8d9b-4746-b98d-78c4c129f0f4` |
+
+**WaterRoads — WREI Platform subgraph:**
+| Agent | Role | ID |
+|-------|------|----|
+| WREI Executive | ceo | `4b0431d6-6ade-41ef-9e69-ee7cf7d4d1dd` |
+| WREI Platform Engineering Lead | pm | `2141547b-a960-4b49-b56f-1731c72ba494` |
+| WREI Commercial Lead | pm | `c584dc30-af92-415a-9064-9fc2a829967b` |
+| WREI Regulatory and Compliance Lead | pm | `30e355e4-7b12-4d06-9014-b7dd96ea795a` |
+| WREI Finance and Corporate Lead | pm | `db519b9b-2f1c-4153-9e0f-e7cc1b20cd56` |
+| WREI Platform Engineering Specialist | engineer | `953dbb3b-2dfb-4a34-9001-bacc0d0ee6a4` |
+| WREI Product and UX | engineer | `dcf53002-39c7-442d-b395-9feaf1d44455` |
+| WREI Market Intelligence | researcher | `7f1425a1-6460-4345-804b-835dda1a2912` |
+| WREI QA / Verification | qa | `1938b2e0-0890-4c3c-b279-d2e1dc18dcfd` |
+| WREI Sales Development | general | `fe0ac1e9-a200-498f-9667-19427f260446` |
+| WREI Origination | general | `e3536c45-646b-4280-9c72-783e3a4829fe` |
+| WREI Legal and Regulatory Research | researcher | `73245b34-e55d-4eda-b050-d6c5add9b0c9` |
+| WREI Grants and Treasury | general | `7f3087ab-6038-4978-afbc-5f160867621f` |
+| WREI Office Management | general | `de35dd35-d553-423b-9a78-3e597bad9635` |
+
+The WREI Regulatory and Compliance Lead and the WREI Legal and Regulatory Research agents are on STANDBY per ADR-WREI-035 (26 April 2026) — heartbeats demoted to 24 hours and no active work delegated. They activate on regulator query, counterparty-demanded legal opinion, or formal commissioning of Wave 2 or Wave 4.
 
 **Entity context:**
 - CBS Group: Technical advisory firm — asset performance, whole-of-life optimisation, CAPITAL framework, government procurement (AU/NZ)
@@ -169,7 +208,9 @@ curl -s "${PAPERCLIP_URL}/api/companies/{companyId}/agents" \
 ### Delegation Rules
 
 - For CBS Group work: create tasks assigned to the **CBS Executive** (`01273fb5-3af2-4b2e-bf92-06da5dc8eb10`). The CEO will triage and delegate down the chain. Do not assign directly to Tier 2 or Tier 3 agents unless Jeff explicitly instructs it.
-- For WaterRoads work: create tasks assigned to the **WR Executive** (`00fb11a2-2ede-43b0-b680-9d4b12551bb8`). Remember both Jeff and Sarah Taylor have governance authority.
+- For WaterRoads ferry-operations work: create tasks assigned to the **WR Executive** (`00fb11a2-2ede-43b0-b680-9d4b12551bb8`). Both Jeff and Sarah Taylor have governance authority.
+- For WREI platform work: create tasks assigned to the **WREI Executive** (`4b0431d6-6ade-41ef-9e69-ee7cf7d4d1dd`). WREI gate decisions and wave pivots are dual-principal (Jeff as WREI Chair plus Sarah as WR CEO) and ratified via Paperclip `in_review`.
+- Cross-subgraph or scope-ambiguous WaterRoads work: route to the **WR Executive**. WR Executive is the agent-tree apex and arbitrates between the ferry-operations and WREI subgraphs.
 - Always provide clear briefs: what is needed, why, when, and what good looks like.
 - Set `priority` appropriately: `urgent`, `high`, `medium`, `low`.
 - Use `parentId` to link subtasks when breaking down larger work.
