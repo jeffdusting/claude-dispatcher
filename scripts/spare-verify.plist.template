@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    com.river.spare-verify — Phase F warm-spare nightly backup verification.
+
+    Fires once per day at 03:15 local time. Pulls the latest age-encrypted
+    snapshot from R2, decrypts to a scratch directory, validates structure
+    and JSON parsability, deletes the scratch, writes a heartbeat under
+    $WORKSPACE_DIR/logs/spare-verify/last-verify.json.
+
+    Install:
+      cp scripts/spare-verify.plist.template ~/Library/LaunchAgents/com.river.spare-verify.plist
+      # then sed -i '' the placeholder paths below to match the spare's
+      # workspace location, or run scripts/install-spare-verify.sh which
+      # does the substitution and the launchctl load.
+
+    Uninstall:
+      launchctl unload ~/Library/LaunchAgents/com.river.spare-verify.plist
+      rm ~/Library/LaunchAgents/com.river.spare-verify.plist
+
+    Schedule choice — 03:15 is after the 03:00 R2 backup tick (the hourly
+    cron fires on the hour) but before the operator's working day, so a
+    failed verify shows up in the morning heartbeat check rather than
+    interrupting active work. ThrottleInterval is left at the default
+    (10 seconds) — the job is short and idempotent, so launchd's debounce
+    is a non-issue.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.river.spare-verify</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__DISPATCHER_DIR__/scripts/spare-verify-backup.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__DISPATCHER_DIR__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>15</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__WORKSPACE_DIR__/logs/spare-verify-stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__WORKSPACE_DIR__/logs/spare-verify-stderr.log</string>
+</dict>
+</plist>
