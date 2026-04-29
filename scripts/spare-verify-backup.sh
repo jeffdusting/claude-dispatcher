@@ -96,21 +96,24 @@ for bin in op age rclone jq tar; do
 done
 
 # ── 2. Resolve credentials ───────────────────────────────────────────────────
-# 1Password desktop integration is the laptop's `op` auth path; if the desktop
-# is locked or signed out, op CLI returns a non-zero exit and an explicit
-# "not signed in" error which we surface verbatim.
+# Reads route through op-or-keychain.sh (Phase F.4) so a 1Password outage,
+# locked desktop session, or biometric-prompt timeout fails over to the
+# macOS Keychain cache. Successful op reads also refresh the Keychain so
+# subsequent fallback calls remain current.
 
-PRIV_KEY=$(op read "op://CoS-Dispatcher/backup-age-key/credential" 2>&1) \
-  || fail 1 "op read backup-age-key/credential failed: $PRIV_KEY"
+OPKC="$SCRIPT_DIR/op-or-keychain.sh"
 
-R2_AK=$(op read "op://CoS-Dispatcher/r2-bucket-credentials/access-key-id" 2>&1) \
-  || fail 1 "op read r2-bucket-credentials/access-key-id failed: $R2_AK"
+PRIV_KEY=$("$OPKC" read "op://CoS-Dispatcher/backup-age-key/credential" 2>&1) \
+  || fail 1 "op-or-keychain backup-age-key/credential failed: $PRIV_KEY"
 
-R2_SK=$(op read "op://CoS-Dispatcher/r2-bucket-credentials/secret-access-key" 2>&1) \
-  || fail 1 "op read r2-bucket-credentials/secret-access-key failed: $R2_SK"
+R2_AK=$("$OPKC" read "op://CoS-Dispatcher/r2-bucket-credentials/access-key-id" 2>&1) \
+  || fail 1 "op-or-keychain r2-bucket-credentials/access-key-id failed: $R2_AK"
 
-R2_EP=$(op read "op://CoS-Dispatcher/r2-bucket-credentials/endpoint" 2>&1) \
-  || fail 1 "op read r2-bucket-credentials/endpoint failed: $R2_EP"
+R2_SK=$("$OPKC" read "op://CoS-Dispatcher/r2-bucket-credentials/secret-access-key" 2>&1) \
+  || fail 1 "op-or-keychain r2-bucket-credentials/secret-access-key failed: $R2_SK"
+
+R2_EP=$("$OPKC" read "op://CoS-Dispatcher/r2-bucket-credentials/endpoint" 2>&1) \
+  || fail 1 "op-or-keychain r2-bucket-credentials/endpoint failed: $R2_EP"
 
 # rclone reads its config from RCLONE_CONFIG_<remote>_<key> env vars. Using
 # inline env keeps the helper config-file-free on the spare.
