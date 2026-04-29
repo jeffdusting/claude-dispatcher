@@ -247,8 +247,10 @@ export const PROGRESS_UPDATE_MS = 8_000
 // route attachments onto the /data volume.
 export const ATTACHMENT_DIR = envOr('ATTACHMENT_DIR', join(DISPATCHER_DIR, 'attachments'))
 
-// Claude CLI
-export const CLAUDE_BIN = join(homedir(), '.local', 'bin', 'claude')
+// Claude CLI. Laptop default is the user-local npm install path; cloud
+// fly.toml [env] overrides to /usr/bin/claude (npm -g destination on the
+// Debian-based bun image).
+export const CLAUDE_BIN = envOr('CLAUDE_BIN', join(homedir(), '.local', 'bin', 'claude'))
 export const CLAUDE_AGENT = 'chief-of-staff'
 export const CLAUDE_MODEL = 'opus'
 
