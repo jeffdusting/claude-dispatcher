@@ -36,6 +36,8 @@ import {
 } from '../src/discordApi.js'
 import { rememberThread } from '../src/threadSessions.js'
 import { dropKickoffRequest } from '../src/kickoffInbox.js'
+import { resolveEntityForChannel } from '../src/channelEntityMap.js'
+import { isEntity, type Entity } from '../src/entity.js'
 
 const { values } = parseArgs({
   options: {
@@ -43,12 +45,15 @@ const { values } = parseArgs({
     brief: { type: 'string' },
     'origin-thread': { type: 'string' },
     'max-workers': { type: 'string' },
+    entity: { type: 'string' },
   },
   strict: true,
 })
 
 if (!values.name || !values.brief || !values['origin-thread']) {
-  console.error('Usage: kickoff-project.ts --name <n> --brief <b> --origin-thread <id> [--max-workers N]')
+  console.error(
+    'Usage: kickoff-project.ts --name <n> --brief <b> --origin-thread <id> [--max-workers N] [--entity cbs|wr]',
+  )
   process.exit(2)
 }
 
@@ -62,22 +67,39 @@ if (!Number.isFinite(maxWorkers) || maxWorkers < 1 || maxWorkers > 5) {
   process.exit(2)
 }
 
-async function main(): Promise<void> {
-  // 1. Create the project record
-  const project = createProject({
-    name,
-    brief,
-    originThreadId,
-    maxParallelWorkers: maxWorkers,
-  })
+let explicitEntity: Entity | undefined
+if (values.entity !== undefined) {
+  if (!isEntity(values.entity)) {
+    console.error(`--entity must be 'cbs' or 'wr' (got: ${values.entity})`)
+    process.exit(2)
+  }
+  explicitEntity = values.entity
+}
 
-  // 2. Resolve parent channel and create project thread
+async function main(): Promise<void> {
+  // 1. Resolve parent channel of the origin thread first — Phase H wires the
+  //    channel-to-entity map so the project descriptor can be created with
+  //    the correct entity in one shot. An explicit `--entity` flag wins over
+  //    the channel-derived value.
   const parentChannelId = await getChannelParent(originThreadId)
   if (!parentChannelId) {
     throw new Error(
       `Could not resolve parent channel for thread ${originThreadId}`,
     )
   }
+
+  const channelEntity = resolveEntityForChannel(parentChannelId)
+  const entity: Entity | undefined = explicitEntity ?? channelEntity ?? undefined
+
+  // 2. Create the project record with the inferred entity (or default if
+  //    inference returned no value).
+  const project = createProject({
+    name,
+    brief,
+    originThreadId,
+    maxParallelWorkers: maxWorkers,
+    entity,
+  })
 
   const thread = await createPublicThread({
     parentChannelId,
@@ -151,6 +173,8 @@ async function main(): Promise<void> {
     threadId: thread.id,
     parentChannelId,
     maxWorkers,
+    entity: project.entity,
+    entitySource: explicitEntity ? 'explicit' : channelEntity ? 'channel-map' : 'default',
   }, null, 2))
 }
 
