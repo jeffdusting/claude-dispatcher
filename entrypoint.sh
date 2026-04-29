@@ -73,13 +73,20 @@ export HOME=/home/dispatcher
 # owned by the dispatcher user.
 DISCORD_ENV_DIR="${HOME}/.claude/channels/discord"
 DISCORD_ENV_FILE="${DISCORD_ENV_DIR}/.env"
+DISCORD_ACCESS_FILE="${DISCORD_ENV_DIR}/access.json"
 mkdir -p "${DISCORD_ENV_DIR}"
 DISCORD_BOT_TOKEN_VAL=$(op read "op://CoS-Dispatcher/discord-bot/credential")
 printf 'DISCORD_BOT_TOKEN=%s\n' "${DISCORD_BOT_TOKEN_VAL}" > "${DISCORD_ENV_FILE}"
 unset DISCORD_BOT_TOKEN_VAL
+# loadAccess() reads access.json on every inbound message; sweepRetention()
+# reads it on boot (index.ts:193) so the file must exist before primary-mode
+# init runs to completion. The vault holds a pristine copy; runtime
+# mutations via /access on the cloud are NOT persisted across redeploys
+# (B-013 follow-up — move the file onto /data so /access mutations stick).
+op read "op://CoS-Dispatcher/discord-bot/access-config-json" > "${DISCORD_ACCESS_FILE}"
 chown -R dispatcher:dispatcher "${HOME}/.claude"
 chmod 700 "${DISCORD_ENV_DIR}"
-chmod 600 "${DISCORD_ENV_FILE}"
+chmod 600 "${DISCORD_ENV_FILE}" "${DISCORD_ACCESS_FILE}"
 
 # ── Supercronic ──────────────────────────────────────────────────────────────
 # Run under the dispatcher user so backup.sh writes to /data as the same user
