@@ -22,6 +22,7 @@ import {
   restoreContinuations,
   replayPendingSideEffects,
   runKickoffCycle,
+  runTenderCycle,
   notifyIfStaleAgents,
 } from './gateway.js'
 import {
@@ -143,6 +144,7 @@ if (DISPATCHER_ROLE !== 'spare') {
 
 let cleanupInterval: ReturnType<typeof setInterval> | undefined
 let kickoffInterval: ReturnType<typeof setInterval> | undefined
+let tenderInterval: ReturnType<typeof setInterval> | undefined
 let projectArchiveInterval: ReturnType<typeof setInterval> | undefined
 let retentionInterval: ReturnType<typeof setInterval> | undefined
 
@@ -169,6 +171,18 @@ if (!skipCron) {
   // Run once on boot to pick up any requests that were dropped while the
   // dispatcher was offline.
   runKickoffCycle()
+
+  // Tender queue cycle (Phase H §12.3) — same cadence as the kickoff
+  // cycle. Tender-classified kickoffs land in their own queue; the
+  // handler stands them up against the recommended agent.
+  tenderInterval = setInterval(() => {
+    try {
+      runTenderCycle()
+    } catch (err) {
+      logDispatcher('tender_cycle_error', { error: String(err) })
+    }
+  }, 10 * 1000)
+  runTenderCycle()
 
   // Project archival sweep — once an hour, move `complete`/`cancelled`/`failed`
   // projects out of the active directory.
@@ -229,6 +243,7 @@ async function shutdown(): Promise<void> {
 
   if (cleanupInterval) clearInterval(cleanupInterval)
   if (kickoffInterval) clearInterval(kickoffInterval)
+  if (tenderInterval) clearInterval(tenderInterval)
   if (projectArchiveInterval) clearInterval(projectArchiveInterval)
   if (retentionInterval) clearInterval(retentionInterval)
   clearInterval(heartbeatInterval)

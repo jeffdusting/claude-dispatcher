@@ -86,3 +86,15 @@ export async function getChannelParent(channelId: string): Promise<string | null
   const body = (await res.json()) as { parent_id?: string | null }
   return body.parent_id ?? null
 }
+
+/**
+ * Resolve a channel's name — used by the tender classifier (Phase H §12.3)
+ * to detect tender-bearing channels by substring match. Returns null if
+ * the API response lacks a name field (rare; happens for some thread
+ * types pre-population).
+ */
+export async function getChannelName(channelId: string): Promise<string | null> {
+  const res = await discordFetch(`/channels/${channelId}`, { method: 'GET' })
+  const body = (await res.json()) as { name?: string | null }
+  return body.name ?? null
+}

@@ -82,6 +82,7 @@ import {
   type ContinuationDescriptor,
 } from './continuation.js'
 import { drainKickoffRequests, type KickoffRequest } from './kickoffInbox.js'
+import { drainTenderRequests, type TenderRequest } from './tenderQueue.js'
 import { appendProjectLog, getProject } from './projects.js'
 import { chunk } from './chunker.js'
 import { logDispatcher } from './logger.js'
@@ -1588,6 +1589,142 @@ export function runKickoffCycle(): void {
   for (const req of pending) {
     handleKickoff(req).catch((err) => {
       logDispatcher('kickoff_handler_error', {
+        projectId: req.projectId,
+        error: String(err),
+      })
+    })
+  }
+}
+
+// ─── Tender Queue Processing (Phase H §12.3) ──────────────────────
+//
+// Tender-classified kickoffs land in their own queue carrying entity
+// and recommended-agent fields. The handler converts the tender request
+// into a kickoff against the same project descriptor, but with a
+// tender-flavoured prompt that names the recommended agent. After this
+// hand-off the project follows the normal PM lifecycle.
+
+async function handleTender(req: TenderRequest): Promise<void> {
+  const project = getProject(req.projectId)
+  if (!project) {
+    logDispatcher('tender_project_missing', { projectId: req.projectId })
+    return
+  }
+  // Same correlation-scope discipline as the kickoff path so all logs,
+  // Discord posts, and Drive uploads under this tender inherit the
+  // descriptor's correlationId.
+  return withCorrelation(project.correlationId, () =>
+    handleTenderInner(req, project),
+  ) as Promise<void>
+}
+
+async function handleTenderInner(
+  req: TenderRequest,
+  project: NonNullable<ReturnType<typeof getProject>>,
+): Promise<void> {
+  const channel = await resolveThreadChannel(req.projectThreadId)
+  if (!channel) {
+    logDispatcher('tender_channel_unresolved', {
+      projectId: req.projectId,
+      threadId: req.projectThreadId,
+    })
+    return
+  }
+
+  if (activeWorkerCount() >= maxConcurrentLimit()) {
+    logDispatcher('tender_at_capacity', { projectId: req.projectId })
+    const { dropTenderRequest } = await import('./tenderQueue.js')
+    dropTenderRequest(req)
+    return
+  }
+
+  createSession(req.projectThreadId, `Tender: ${project.name}`)
+  trackSessionCreated(req.projectThreadId, `Tender: ${project.name}`)
+  appendProjectLog(req.projectId, `Tender PM kickoff starting (agent: ${req.recommendedAgent}; signals: ${req.signals.join(', ')}).`)
+
+  await startTyping(channel)
+  const [progressMsgId] = await sendToChannel(channel, 'Standing up tender handler...')
+  const tracker = progressMsgId ? createProgressTracker(channel, progressMsgId) : null
+
+  const outboxBefore = snapshotOutbox()
+
+  try {
+    const result = await runSession({
+      prompt: req.kickoffPrompt,
+      threadId: req.projectThreadId,
+      onProgress: () => tracker?.tick(),
+    })
+
+    tracker?.stop()
+    if (progressMsgId) {
+      await editMessage(channel, progressMsgId, 'Tender handler initialised.')
+    }
+
+    if (result.response) {
+      await sendToChannel(channel, result.response)
+    }
+
+    markIdle(req.projectThreadId, result.sessionId!)
+    trackTurnCompleted(
+      req.projectThreadId,
+      result.cost,
+      result.durationMs,
+      result.toolsUsed,
+    )
+    recordSuccess()
+
+    const newFiles = diffOutbox(outboxBefore)
+    if (newFiles.length > 0) {
+      await sendFiles(channel, newFiles, 'Output file(s):')
+    }
+
+    appendProjectLog(req.projectId, 'Tender PM kickoff complete.')
+    await maybeScheduleContinuation(channel, req.projectThreadId)
+  } catch (err) {
+    tracker?.stop()
+    if (err instanceof WorkerSlotUnavailableError) {
+      if (progressMsgId) {
+        await editMessage(channel, progressMsgId, 'Tender handler deferred — at capacity.')
+      }
+      markError(req.projectThreadId, 'worker_slot_unavailable')
+      const { dropTenderRequest } = await import('./tenderQueue.js')
+      dropTenderRequest(req)
+      appendProjectLog(req.projectId, 'Tender PM kickoff deferred: at capacity, re-queued.')
+      return
+    }
+    if (progressMsgId) {
+      await editMessage(channel, progressMsgId, 'Tender handler failed.')
+    }
+    markError(req.projectThreadId, String(err))
+    trackSessionError(req.projectThreadId)
+    recordError()
+    appendProjectLog(req.projectId, `Tender PM kickoff failed: ${String(err).slice(0, 200)}`)
+    await sendToChannel(
+      channel,
+      `Tender handler failed: ${String(err).slice(0, 200)}`,
+    )
+  }
+}
+
+/**
+ * Drain any pending tender requests. Called on the same interval cadence
+ * as the kickoff cycle from index.ts. Mirrors `runKickoffCycle`'s
+ * fire-and-forget shape so a slow tender doesn't block the next one.
+ */
+export function runTenderCycle(): void {
+  if (isAnthropicCapHit()) {
+    logDispatcher('tender_cycle_paused_cap_hit')
+    return
+  }
+  if (isDraining()) {
+    return
+  }
+  const pending = drainTenderRequests()
+  if (pending.length === 0) return
+  logDispatcher('tender_cycle', { count: pending.length })
+  for (const req of pending) {
+    handleTender(req).catch((err) => {
+      logDispatcher('tender_handler_error', {
         projectId: req.projectId,
         error: String(err),
       })
