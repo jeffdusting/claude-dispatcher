@@ -7,6 +7,7 @@
  */
 
 import { seedStateIfAbsent } from './bootstrap.js'
+import { bootstrapEAPartitions } from './eaPartitions.js'
 import { syncAgents } from './agentSync.js'
 import {
   loadSessions,
@@ -47,6 +48,16 @@ import { DISPATCHER_ROLE, DISPATCHER_PAUSE_CRON, HEALTHCHECK_PORT } from './conf
 
 // Seed missing runtime state files from state/seeds/ on first boot.
 seedStateIfAbsent()
+
+// Bootstrap per-EA partition directories and the cross-EA mailroom parent
+// (Migration Plan §14.2.2; architecture v2.1 §5.1). Idempotent — re-runs on
+// every boot. Only partitions for currently-mapped principals (per
+// config/first-agent-by-principal.json) are pre-created.
+const eaBootstrap = bootstrapEAPartitions()
+logDispatcher('ea_partitions_bootstrap', {
+  partitions: eaBootstrap.partitions,
+  mailroomDir: eaBootstrap.mailroomDir,
+})
 
 // Sync agent definitions from the dispatcher repo's canonical .claude/agents/
 // into ~/.claude/agents/ — Claude Code's user-level fallback. Runs before any
