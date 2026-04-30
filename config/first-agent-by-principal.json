@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "comment": "Maps Discord author IDs to per-principal EA partitions. Each partition lives at state/eas/<partition>/. Unmapped author IDs produce an audit-logged refusal rather than silent default routing (Δ D-015 / Migration Plan §14.2.1). Add Sarah's Discord ID when provisioned; CC will not invent or guess an ID.",
+  "mappings": {
+    "1495020845846761582": "jeff"
+  }
+}
