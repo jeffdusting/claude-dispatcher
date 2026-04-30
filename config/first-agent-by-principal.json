@@ -1,13 +1,19 @@
 {
   "schemaVersion": 2,
-  "comment": "Maps Discord author IDs to per-principal EA partitions and binds each partition to its principal display name and per-EA Anthropic key vault reference (Migration Plan §14.2.4; architecture v2.1 §2.2.4). Each partition lives at state/eas/<partition>/. Unmapped author IDs produce an audit-logged refusal rather than silent default routing (Δ D-015 / Migration Plan §14.2.1). Add Sarah's Discord ID when provisioned; CC will not invent or guess an ID. Schema v2 adds the partitions block; v1 configs (mappings only) are still loaded with empty partition metadata.",
+  "comment": "Maps Discord author IDs to per-principal EA partitions and binds each partition to its principal display name, per-EA Anthropic key vault reference, and per-EA Claude agent name (Migration Plan §14.2.4 + §14.4.3; architecture v2.1 §2.2.4). Each partition lives at state/eas/<partition>/. Unmapped author IDs produce an audit-logged refusal rather than silent default routing (Δ D-015 / Migration Plan §14.2.1). The `sarah` partition (Quinn — Sarah Taylor's EA, OD-035) is staged without a Discord-ID mapping pending operator-supplied Sarah's Discord author ID; once provided, append the `<sarah-discord-id>: \"sarah\"` entry under `mappings`. The `quinn-runtime` vault reference is staged pending operator generation of the Anthropic key in Anthropic Console (OD-038 spawned-worker attribution per OD-012a). CC will not invent or guess either value.",
   "mappings": {
     "1495020845846761582": "jeff"
   },
   "partitions": {
     "jeff": {
       "principalName": "Jeff Dusting",
-      "anthropicKeyVaultRef": "op://CoS-Dispatcher/alex-morgan-runtime/credential"
+      "anthropicKeyVaultRef": "op://CoS-Dispatcher/alex-morgan-runtime/credential",
+      "claudeAgent": "chief-of-staff"
+    },
+    "sarah": {
+      "principalName": "Sarah Taylor",
+      "anthropicKeyVaultRef": "op://CoS-Dispatcher/quinn-runtime/credential",
+      "claudeAgent": "quinn"
     }
   }
 }

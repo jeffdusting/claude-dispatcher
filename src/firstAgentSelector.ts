@@ -39,6 +39,14 @@ export function getFirstAgentConfigPath(): string {
 const PartitionMetadataSchema = z.object({
   principalName: z.string().min(1),
   anthropicKeyVaultRef: z.string().min(1).optional(),
+  /**
+   * Per-partition Claude agent name (Migration Plan §14.4.3 — Phase J.1b).
+   * Resolved by `agentForPartition()` and read by `runSession()` so a
+   * Discord message routed to a partition exercises that partition's EA
+   * agent definition rather than the global default. Optional — partitions
+   * without an explicit `claudeAgent` fall back to the global `CLAUDE_AGENT`.
+   */
+  claudeAgent: z.string().min(1).optional(),
 })
 
 const FirstAgentConfigSchema = z.object({
@@ -142,4 +150,17 @@ export function getPartitionMetadata(partition: string): PartitionMetadata | nul
   const cfg = load()
   const meta = cfg.partitions?.[partition]
   return meta ?? null
+}
+
+/**
+ * Resolve the Claude agent name for a partition (Migration Plan §14.4.3).
+ *
+ * Returns the partition's `claudeAgent` field when present; otherwise null,
+ * leaving the caller to fall back to the global default. Centralised here
+ * so the resolution rule has a single home shared by `runSession()` and
+ * any future per-EA dispatch path.
+ */
+export function agentForPartition(partition: string): string | null {
+  const meta = getPartitionMetadata(partition)
+  return meta?.claudeAgent ?? null
 }
