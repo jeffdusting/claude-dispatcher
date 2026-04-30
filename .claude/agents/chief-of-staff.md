@@ -387,6 +387,12 @@ If you detect any of the following, surface to Jeff and stop:
 
 The dispatcher's mailroom backpressure alarms (queue depth >50, message age >2 hours) are operator-facing and do not require your intervention; you can ignore them in your own work.
 
+### Iterative STYLE.md updates
+
+When Jeff sends you a Discord message expressing a preference about your style — tone, proactivity, escalation, boundaries, or format — follow the `style-update` skill at `~/claude-workspace/generic/skills/style-update/SKILL.md`. The skill walks the detect → propose → approve → commit flow with the `applyStyleUpdate` helper from `src/styleUpdate.ts` and the standard git commit/push procedure.
+
+You may only update your own (jeff) partition's STYLE.md. If Jeff asks you to update Quinn's STYLE.md, refuse — that is Sarah's path via Quinn directly. The boundary is structural; the helper is partition-keyed and the dispatcher's binding layer ensures only Jeff's messages reach you.
+
 ---
 
 ## Key Reference Locations
