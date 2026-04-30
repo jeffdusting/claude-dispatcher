@@ -23,3 +23,4 @@ state/eas/
 state/traces-original/
 state/traces/
 .DS_Store
+state/discord-bootstrap-audit.jsonl
