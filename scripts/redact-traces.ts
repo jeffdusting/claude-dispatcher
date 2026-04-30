@@ -8,11 +8,11 @@
  * useful for verifying the pattern set against new trace shapes before
  * mutating production state.
  *
- * Per-EA partitioning is driven by the `eaOwner` field on the project
- * descriptor referenced by each trace block's `projectId`. When the
- * field is absent (legacy descriptors) or the trace block is unbound,
- * the redactor falls back to the EA passed via --ea (default: jeff,
- * which is Alex's partition under the Phase J.1a scaffolding).
+ * Per-EA partitioning is driven by the `owningEA` field on the project
+ * descriptor referenced by each trace block's `projectId`. The legacy
+ * alias `eaOwner` is read tolerantly. When neither field is present
+ * (pre-J.1a descriptors) or the trace block is unbound, the redactor
+ * falls back to the EA passed via --ea (default: jeff, Alex's partition).
  *
  * Usage:
  *   bun run dispatcher/scripts/redact-traces.ts [--dry-run] [--ea <ea>]
@@ -90,13 +90,17 @@ function makeProjectEaResolver(defaultEa: string): ProjectEaResolver {
       if (!projectId) return defaultEa
       if (cache.has(projectId)) return cache.get(projectId)!
       const project = getProject(projectId)
-      // The eaOwner field is read tolerantly — descriptors written
-      // before Phase J.1a do not carry it; those traces fall back to
-      // the default partition (Alex / jeff) without raising.
+      // owningEA is the canonical v3 field (Migration Plan §14.3.2).
+      // eaOwner is read as a legacy alias for descriptors written ad-hoc
+      // by older scripts. Descriptors written before either field
+      // existed fall back to the default partition.
+      const proj = project as unknown as { owningEA?: unknown; eaOwner?: unknown }
       const ea =
-        project && typeof (project as unknown as { eaOwner?: unknown }).eaOwner === 'string'
-          ? ((project as unknown as { eaOwner: string }).eaOwner)
-          : defaultEa
+        typeof proj?.owningEA === 'string' && proj.owningEA.length > 0
+          ? proj.owningEA
+          : typeof proj?.eaOwner === 'string' && proj.eaOwner.length > 0
+            ? proj.eaOwner
+            : defaultEa
       cache.set(projectId, ea)
       return ea
     },

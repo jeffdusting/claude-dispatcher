@@ -1,5 +1,9 @@
 import { describe, test, expect } from 'bun:test'
-import { normaliseProjectRecord, PROJECT_SCHEMA_VERSION } from '../src/projects.js'
+import {
+  normaliseProjectRecord,
+  PROJECT_SCHEMA_VERSION,
+  DEFAULT_OWNING_EA,
+} from '../src/projects.js'
 
 describe('projects — normaliseProjectRecord (v1→v2 backfill, Δ DA-001)', () => {
   test('returns null when required v1 fields are missing', () => {
@@ -115,5 +119,64 @@ describe('projects — normaliseProjectRecord (v1→v2 backfill, Δ DA-001)', ()
     expect(b.paperclipTaskIds).toEqual(a.paperclipTaskIds)
     expect(b.correlationId).toBe(a.correlationId)
     expect(b.schemaVersion).toBe(a.schemaVersion)
+    expect(b.owningEA).toBe(a.owningEA)
+  })
+})
+
+describe('projects — owningEA backfill (v2→v3, Phase J.1a §14.3.2)', () => {
+  test('legacy records default owningEA to "jeff" (DEFAULT_OWNING_EA)', () => {
+    const v1 = {
+      id: 'p-11',
+      name: 'legacy',
+      tasks: [],
+    }
+    const v3 = normaliseProjectRecord(v1 as Record<string, unknown>)!
+    expect(v3.owningEA).toBe(DEFAULT_OWNING_EA)
+    expect(v3.owningEA).toBe('jeff')
+  })
+
+  test('records with explicit owningEA preserve it', () => {
+    const rec = normaliseProjectRecord({
+      id: 'p-12',
+      name: 'explicit',
+      tasks: [],
+      owningEA: 'sarah',
+    } as Record<string, unknown>)!
+    expect(rec.owningEA).toBe('sarah')
+  })
+
+  test('records with the legacy `eaOwner` alias migrate to `owningEA`', () => {
+    const rec = normaliseProjectRecord({
+      id: 'p-13',
+      name: 'legacy-alias',
+      tasks: [],
+      eaOwner: 'sarah',
+    } as Record<string, unknown>)!
+    expect(rec.owningEA).toBe('sarah')
+  })
+
+  test('owningEA wins over eaOwner when both are present', () => {
+    const rec = normaliseProjectRecord({
+      id: 'p-14',
+      name: 'both',
+      tasks: [],
+      owningEA: 'jeff',
+      eaOwner: 'sarah',
+    } as Record<string, unknown>)!
+    expect(rec.owningEA).toBe('jeff')
+  })
+
+  test('empty owningEA falls back through to default', () => {
+    const rec = normaliseProjectRecord({
+      id: 'p-15',
+      name: 'empty',
+      tasks: [],
+      owningEA: '',
+    } as Record<string, unknown>)!
+    expect(rec.owningEA).toBe(DEFAULT_OWNING_EA)
+  })
+
+  test('PROJECT_SCHEMA_VERSION advanced to 3', () => {
+    expect(PROJECT_SCHEMA_VERSION).toBe(3)
   })
 })

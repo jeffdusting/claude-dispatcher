@@ -16,3 +16,9 @@ state/sessions.json
 state/health.json
 state/ingest-cursors.json
 state/known-channels.json
+state/identity-binding-audit.jsonl
+state/ea-mailroom-alarms.json
+state/ea-mailroom/
+state/eas/
+state/traces-original/
+state/traces/
