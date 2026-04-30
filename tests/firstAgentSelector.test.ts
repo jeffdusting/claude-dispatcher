@@ -97,9 +97,25 @@ describe('selectEAForAuthor', () => {
   })
 
   test('rejects malformed config (wrong schemaVersion)', () => {
-    writeFileSync(cfgPath, JSON.stringify({ schemaVersion: 2, mappings: { a: 'x' } }))
+    // schemaVersion 1 and 2 are accepted; an out-of-range value (e.g. 3) is
+    // rejected. Schema bump to v2 (Migration Plan §14.2.4) added the
+    // partitions block; v1 configs continue to load with empty metadata.
+    writeFileSync(cfgPath, JSON.stringify({ schemaVersion: 3, mappings: { a: 'x' } }))
     _resetFirstAgentCacheForTests()
     expect(() => selectEAForAuthor('a')).toThrow()
+  })
+
+  test('accepts schemaVersion 2 with a partitions block', () => {
+    writeFileSync(
+      cfgPath,
+      JSON.stringify({
+        schemaVersion: 2,
+        mappings: { a: 'x' },
+        partitions: { x: { principalName: 'Alpha', anthropicKeyVaultRef: 'op://v/a' } },
+      }),
+    )
+    _resetFirstAgentCacheForTests()
+    expect(selectEAForAuthor('a')).toEqual({ kind: 'mapped', partition: 'x' })
   })
 
   test('rejects malformed config (mapping value empty)', () => {

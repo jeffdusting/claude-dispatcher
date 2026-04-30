@@ -36,13 +36,23 @@ export function getFirstAgentConfigPath(): string {
   )
 }
 
+const PartitionMetadataSchema = z.object({
+  principalName: z.string().min(1),
+  anthropicKeyVaultRef: z.string().min(1).optional(),
+})
+
 const FirstAgentConfigSchema = z.object({
-  schemaVersion: z.literal(1),
+  // schemaVersion 1: mappings only.
+  // schemaVersion 2: mappings + optional partitions block (Migration Plan
+  // §14.2.4; architecture v2.1 §2.2.4 layer-1 + layer-2 binding metadata).
+  schemaVersion: z.union([z.literal(1), z.literal(2)]),
   comment: z.string().optional(),
   mappings: z.record(z.string(), z.string().min(1)),
+  partitions: z.record(z.string(), PartitionMetadataSchema).optional(),
 })
 
 export type FirstAgentConfig = z.infer<typeof FirstAgentConfigSchema>
+export type PartitionMetadata = z.infer<typeof PartitionMetadataSchema>
 
 export type SelectorResult =
   | { kind: 'mapped'; partition: string }
@@ -116,4 +126,20 @@ export function _resetFirstAgentCacheForTests(): void {
 export function listConfiguredPartitions(): string[] {
   const cfg = load()
   return Array.from(new Set(Object.values(cfg.mappings))).sort()
+}
+
+/**
+ * Look up the partition metadata block for a given partition name. Returns
+ * null when the config does not declare metadata for it (typical for v1
+ * configs that pre-date the partitions block, or for partitions present in
+ * `mappings` but not yet declared in `partitions`).
+ *
+ * Used by the identity-binding resolver (Migration Plan §14.2.4) to chain
+ * Discord author → partition → principal display name + vault credential
+ * reference.
+ */
+export function getPartitionMetadata(partition: string): PartitionMetadata | null {
+  const cfg = load()
+  const meta = cfg.partitions?.[partition]
+  return meta ?? null
 }
