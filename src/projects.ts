@@ -77,10 +77,22 @@ export interface ProjectArtifact {
 /**
  * On-disk schema version for ProjectRecord. v1 had no `entity`,
  * `paperclipTaskIds`, `correlationId`, or `schemaVersion` fields. v2 (Phase
- * A.6) adds all four. Readers tolerate v1 via `normaliseProjectRecord`; the
- * `scripts/backfill-project-descriptors.ts` migrates v1 records on disk.
+ * A.6) adds all four. v3 (Phase J.1a, Migration Plan §14.3.2) adds
+ * `owningEA` — the partition the project belongs to (typically `'jeff'`
+ * for Alex Morgan's projects, `'sarah'` for Quinn's projects). Readers
+ * tolerate v1 and v2 via `normaliseProjectRecord` (defaulting `owningEA`
+ * to `'jeff'`); the `scripts/backfill-project-descriptors.ts` migrates
+ * older records on disk.
  */
-export const PROJECT_SCHEMA_VERSION = 2 as const
+export const PROJECT_SCHEMA_VERSION = 3 as const
+
+/**
+ * Default partition assignment for legacy / un-tagged projects. Pre-J.1a
+ * the dispatcher served Alex Morgan only, so every prior project belongs
+ * to Jeff's partition. Post-J.1a callers must pass `owningEA` explicitly
+ * when the work is for Sarah's partition (or any future partition).
+ */
+export const DEFAULT_OWNING_EA = 'jeff' as const
 
 export interface ProjectRecord {
   id: string
@@ -129,7 +141,18 @@ export interface ProjectRecord {
    * Phase A.11 wires the propagation; A.6 establishes the field.
    */
   correlationId: string
-  /** On-disk schema version. Current writers always set this to 2. */
+  /**
+   * Owning EA partition (Migration Plan §14.3.2; architecture v2.1 §5.1).
+   * Identifies which principal-keyed partition this project belongs to —
+   * `'jeff'` for Alex Morgan's projects, `'sarah'` for Quinn's projects,
+   * any other configured partition for future EAs. Drives per-EA trace
+   * partitioning (`state/traces/<owningEA>/`), per-EA cost attribution
+   * (OD-012a spawned-worker bucket), and is the source of truth for
+   * cross-EA audit reconciliation. Defaults to `'jeff'` for legacy
+   * descriptors via `normaliseProjectRecord`.
+   */
+  owningEA: string
+  /** On-disk schema version. Current writers always set this to 3. */
   schemaVersion: number
 }
 
@@ -198,12 +221,23 @@ export function normaliseProjectRecord(
       : `legacy-${raw.id}`
   const schemaVersion =
     typeof raw.schemaVersion === 'number' ? raw.schemaVersion : 1
+  // v3 field: owningEA. Pre-J.1a descriptors fall back to 'jeff' since the
+  // dispatcher served Alex Morgan only. Tolerantly accept the legacy alias
+  // `eaOwner` if the descriptor was tagged ad-hoc by an older script.
+  const owningEA =
+    typeof raw.owningEA === 'string' && raw.owningEA.length > 0
+      ? raw.owningEA
+      : typeof (raw as { eaOwner?: unknown }).eaOwner === 'string' &&
+          ((raw as { eaOwner: string }).eaOwner).length > 0
+        ? (raw as { eaOwner: string }).eaOwner
+        : DEFAULT_OWNING_EA
 
   return {
     ...(raw as unknown as ProjectRecord),
     entity,
     paperclipTaskIds,
     correlationId,
+    owningEA,
     schemaVersion,
   }
 }
@@ -232,6 +266,11 @@ export function createProject(opts: {
    *  Phase A.5; callers in Phase H may pass an explicit entity once the
    *  channel-to-entity map exists. */
   entity?: Entity
+  /** Owning EA partition. Defaults to DEFAULT_OWNING_EA ('jeff'). Phase
+   *  J.1a (Migration Plan §14.3.2) re-tags legacy descriptors to 'jeff';
+   *  Phase J.1b adds Quinn's partition. Future EAs pass an explicit
+   *  partition name. */
+  owningEA?: string
 }): ProjectRecord {
   const now = Date.now()
   const record: ProjectRecord = {
@@ -250,6 +289,7 @@ export function createProject(opts: {
     entity: opts.entity ?? DEFAULT_ENTITY,
     paperclipTaskIds: [],
     correlationId: randomUUID(),
+    owningEA: opts.owningEA ?? DEFAULT_OWNING_EA,
     schemaVersion: PROJECT_SCHEMA_VERSION,
   }
   writeProjectFile(projectPath(record.id), record)
@@ -257,6 +297,7 @@ export function createProject(opts: {
     id: record.id,
     name: record.name,
     entity: record.entity,
+    owningEA: record.owningEA,
     correlationId: record.correlationId,
   })
   return record
