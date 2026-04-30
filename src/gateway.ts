@@ -107,6 +107,7 @@ import {
   setDiscordPoster,
   acknowledgeByMessageId as acknowledgeTier2Alert,
 } from './escalator.js'
+import { resolveIdentityBinding } from './identityBinding.js'
 
 mkdirSync(ATTACHMENT_DIR, { recursive: true })
 
@@ -1147,6 +1148,23 @@ async function handleMessage(msg: Message): Promise<void> {
     hasAttachments: msg.attachments.size > 0,
     contentPreview: msg.content.slice(0, 100),
   })
+
+  // Identity-binding three-layer resolution (Migration Plan §14.2.4;
+  // architecture v2.1 §2.2.4). Layer 1 maps the author to an EA partition
+  // and the resolver chains in layer-2 metadata (principal display name +
+  // vault credential reference) plus the layer-3 audit log entry. An
+  // unmapped principal is refused at the dispatcher boundary rather than
+  // silently routed to a default EA — same posture the access layer takes
+  // for an unknown channel. Refusal does not reply to Discord; the
+  // dispatcher is invisible to authors who cannot reach an EA.
+  const binding = resolveIdentityBinding(msg.author.id, {
+    messageId: msg.id,
+    channelId: msg.channelId,
+    correlationId: getCorrelationId(),
+  })
+  if (binding.kind === 'refuse') {
+    return
+  }
 
   const cleaned = cleanContent(msg)
   const command = cleaned.trim().toLowerCase()

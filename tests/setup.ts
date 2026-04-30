@@ -40,6 +40,13 @@ process.env.DISPATCHER_TEST_MODE = '1'
 process.env.WORKER_MEMORY_WARN_BYTES = '100'
 process.env.WORKER_MEMORY_KILL_BYTES = '200'
 
+// Mailroom-cycle thresholds (Migration Plan §14.2.3 backpressure tests).
+// Set here for the same reason — eaMailroomCycle.ts captures these at
+// module load via parseInt(process.env.X ?? default).
+process.env.MAILROOM_DEPTH_ALARM_THRESHOLD = '3'
+process.env.MAILROOM_AGE_ALARM_MS = '60000'           // 1 minute
+process.env.MAILROOM_DEPTH_ALARM_REPEAT_MS = '600000' // 10 minutes
+
 // Default fetch: surface unexpected network access loudly. Tests override
 // per-suite via installFetchStub() when the code under test makes a fetch.
 globalThis.fetch = (async (input: RequestInfo | URL) => {
