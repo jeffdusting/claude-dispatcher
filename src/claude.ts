@@ -24,6 +24,8 @@ import {
   SUPABASE_ENV_NAMES,
 } from './entity.js'
 import { resolveEntityForThread } from './entityResolver.js'
+import { agentForPartition } from './firstAgentSelector.js'
+import { getCurrentPartition } from './partitionContext.js'
 import {
   withUpstream,
   recordBreakerSuccess,
@@ -169,9 +171,18 @@ export async function runSession(opts: {
   onProgress?: (text: string) => void
 }): Promise<SessionResult> {
   const { prompt, sessionId, threadId, onProgress } = opts
-  // Agent/model resolution order: explicit opts > per-thread override > env default.
+  // Agent/model resolution order: explicit opts > per-thread override >
+  // partition's claudeAgent (from the active partition-binding scope set by
+  // gateway.handleMessage — Migration Plan §14.4.3) > env default. The
+  // partition layer is what makes Quinn's messages spawn Quinn rather than
+  // Alex; the per-thread override is preserved so existing project-mode and
+  // tender flows that pass `agent: 'project-manager'` keep their behaviour.
   const threadRecord = getThreadRecord(threadId)
-  const agent = opts.agent ?? threadRecord?.agent ?? CLAUDE_AGENT
+  const partitionAgent = (() => {
+    const p = getCurrentPartition()
+    return p ? agentForPartition(p) : null
+  })()
+  const agent = opts.agent ?? threadRecord?.agent ?? partitionAgent ?? CLAUDE_AGENT
   const model = opts.model ?? CLAUDE_MODEL
   const entity: Entity = opts.entity ?? resolveEntityForThread(threadId)
 

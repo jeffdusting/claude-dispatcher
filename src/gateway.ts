@@ -108,6 +108,7 @@ import {
   acknowledgeByMessageId as acknowledgeTier2Alert,
 } from './escalator.js'
 import { resolveIdentityBinding } from './identityBinding.js'
+import { withPartition } from './partitionContext.js'
 
 mkdirSync(ATTACHMENT_DIR, { recursive: true })
 
@@ -1166,6 +1167,16 @@ async function handleMessage(msg: Message): Promise<void> {
     return
   }
 
+  // Set the partition-binding scope for the rest of this turn (Migration
+  // Plan §14.4.3 — Phase J.1b). `runSession()` reads `getCurrentPartition()`
+  // to resolve the partition's `claudeAgent`, so a Discord message routed
+  // to Sarah's partition exercises Quinn's agent definition rather than
+  // the global default. Same async-local-storage pattern as
+  // `withCorrelation()`.
+  await withPartition(binding.binding.partition, () => handleMessageInner(msg))
+}
+
+async function handleMessageInner(msg: Message): Promise<void> {
   const cleaned = cleanContent(msg)
   const command = cleaned.trim().toLowerCase()
 
