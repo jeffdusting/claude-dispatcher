@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "lastUpdated": "2026-04-29",
+  "rationale": "Operator-confirmed list of named individuals whose appearances in trace blocks must be redacted before ingestion into per-EA knowledge bases. Operator confirmation 2026-04-29 (sixteenth session bootstrap): Jeff Dusting plus the Jad variant; Sarah Taylor; Alex Morgan; Quinn. Update procedure: edit this file in a PR; the redactor reads it at process start, so a redeploy is required for changes to take effect.",
+  "names": [
+    {
+      "canonical": "Jeff Dusting",
+      "variants": ["Jeff Dusting", "Jeffrey Dusting", "Dusting", "Jeff", "Jad"]
+    },
+    {
+      "canonical": "Sarah Taylor",
+      "variants": ["Sarah Taylor", "Sarah", "Taylor", "SJT"]
+    },
+    {
+      "canonical": "Alex Morgan",
+      "variants": ["Alex Morgan", "Alex", "Morgan"]
+    },
+    {
+      "canonical": "Quinn",
+      "variants": ["Quinn"]
+    }
+  ]
+}
