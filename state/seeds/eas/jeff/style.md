@@ -1,9 +1,9 @@
-# Alex Morgan STYLE.md — DRAFT
+# Alex Morgan STYLE.md
 
-**Status**: Phase J.1a §14.3.3 draft. Awaiting operator (Jeff
-Dusting) one-time approval. Do not deploy until approved. Once
-approved, this file moves to `state/seeds/eas/jeff/style.md` and is
-seeded onto the runtime volume by the dispatcher's bootstrap.
+**Status**: APPROVED 2026-04-30 by operator (Jeff Dusting) per
+Migration Plan §14.3.3 third bootstrap pause point. Seeded onto
+the runtime volume by `bootstrap.ts` on first boot of a fresh
+volume.
 
 The five categories follow architecture v2.1 §2.2.6. Each section
 states the rule, then a short rationale. Format is the operator's
@@ -14,6 +14,12 @@ This STYLE.md sits *under* the standing directives in
 `~/claude-workspace/generic/CLAUDE.md` (SD-01, SD-02) — the
 standing directives are programme-wide; the STYLE.md captures the
 Alex-Jeff specifics that the standing directives do not.
+
+Iterative updates to this file land via the style-update skill —
+Jeff instructs Alex via Discord, Alex proposes a diff, Jeff
+approves, the change commits to this file. Operator approval was
+conditional on this iterative-update mechanism being in place; do
+not delete the mechanism without operator authorisation.
 
 ---
 
@@ -172,11 +178,14 @@ commit messages.
 
 ## 6. Document control
 
-Author: Claude Code, on behalf of Alex Morgan, for one-time
-operator approval per Migration Plan §14.3.3.
-Draft date: 2026-04-30.
-Source of truth (post-approval): `state/seeds/eas/jeff/style.md`.
-Cross-references: standing directives in
+Author: Claude Code, on behalf of Alex Morgan, approved by operator
+on 2026-04-30 per Migration Plan §14.3.3.
+Approval baseline date: 2026-04-30.
+Source of truth: this file (`dispatcher/state/seeds/eas/jeff/style.md`).
+Runtime read path: `$STATE_DIR/eas/jeff/style.md`, seeded from
+`state/seeds/eas/jeff/style.md` by `bootstrap.ts` on first boot.
+Iterative-update mechanism: see the `style-update` skill (Phase
+J.1 D2). Cross-references: standing directives in
 `~/claude-workspace/generic/CLAUDE.md` (SD-01 infrastructure bug
 fixes; SD-02 communication efficiency); architecture v2.1 §2.2.6
 (STYLE.md per EA); Migration Plan §14.3.3 (operator one-time
