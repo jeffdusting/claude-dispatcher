@@ -41,6 +41,11 @@ import { markDraining, awaitWorkersDrained } from './drain.js'
 import { startIntegrationsProbe, stopIntegrationsProbe } from './integrationsHealth.js'
 import { startCapDetector, stopCapDetector } from './anthropicCap.js'
 import { startEscalator, stopEscalator } from './escalator.js'
+import {
+  startMailroomCycle,
+  stopMailroomCycle,
+  runMailroomCycle,
+} from './eaMailroomCycle.js'
 import { sweepRetention, shutdownIngest } from './ingest.js'
 import { listActiveProjects, archiveProject } from './projects.js'
 import { logDispatcher } from './logger.js'
@@ -158,6 +163,7 @@ let kickoffInterval: ReturnType<typeof setInterval> | undefined
 let tenderInterval: ReturnType<typeof setInterval> | undefined
 let projectArchiveInterval: ReturnType<typeof setInterval> | undefined
 let retentionInterval: ReturnType<typeof setInterval> | undefined
+let mailroomStarted = false
 
 if (!skipCron) {
   // Periodic cleanup of expired sessions (every 15 minutes)
@@ -194,6 +200,17 @@ if (!skipCron) {
     }
   }, 10 * 1000)
   runTenderCycle()
+
+  // EA mailroom drain + backpressure (Migration Plan §14.2.3).
+  // 60-second cadence per architecture v2.1 §2.2.2; alarms fire at
+  // depth/age thresholds from §2.2.5.
+  startMailroomCycle()
+  mailroomStarted = true
+  // Run once on boot to flush anything queued while the dispatcher was
+  // offline. Fire-and-forget — failures log but do not block boot.
+  runMailroomCycle().catch((err) => {
+    logDispatcher('mailroom_cycle_boot_error', { error: String(err) })
+  })
 
   // Project archival sweep — once an hour, move `complete`/`cancelled`/`failed`
   // projects out of the active directory.
@@ -263,6 +280,7 @@ async function shutdown(): Promise<void> {
   stopIntegrationsProbe()
   stopCapDetector()
   stopEscalator()
+  if (mailroomStarted) stopMailroomCycle()
 
   // Wait for in-flight workers to complete; force-kill survivors at the
   // budget. State-file flushes happen after the wait so anything captured
