@@ -22,3 +22,4 @@ state/ea-mailroom/
 state/eas/
 state/traces-original/
 state/traces/
+.DS_Store

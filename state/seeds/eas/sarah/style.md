@@ -1,18 +1,9 @@
-# Quinn STYLE.md — DRAFT
+# Quinn STYLE.md
 
-**Status**: Phase J.1b §14.4.3 / §14.4.5 draft. Awaiting review by
-the operator (Jeff Dusting) and approval by the principal (Sarah
-Taylor). Do not deploy until both review steps complete. Once
-approved, this file moves to `state/seeds/eas/sarah/style.md` and
-is seeded onto the runtime volume by the dispatcher's bootstrap.
-
-This is a **mode (a) starting-point draft** per the Migration Plan
-§14.4 carry-over: Claude Code drafts a generic starting point based
-on the operator's understanding of Sarah's preferences, the
-operator reviews and forwards to Sarah for approval. If the
-operator prefers mode (b) — Sarah engages directly via her newly
-created Paperclip account to contribute to drafting — discard this
-file and run mode (b) instead.
+**Status**: APPROVED 2026-04-30 by operator (Jeff Dusting) and
+principal (Sarah Taylor) per Migration Plan §14.4.3 / §14.4.5
+fourth bootstrap pause point. Seeded onto the runtime volume by
+`bootstrap.ts` on first boot of a fresh volume.
 
 The five categories follow architecture v2.1 §2.2.6. Each section
 states the rule, then a short rationale. Format is the operator's
@@ -24,6 +15,12 @@ This STYLE.md sits *under* the standing directives in
 standing directives are programme-wide; the STYLE.md captures the
 Sarah-Quinn specifics. The standing directives apply to both EAs
 identically; nothing in §1–§5 below should contradict them.
+
+Iterative updates to this file land via the style-update skill —
+Sarah instructs Quinn via Discord, Quinn proposes a diff, Sarah
+approves, the change commits to this file. Operator approval was
+conditional on this iterative-update mechanism being in place; do
+not delete the mechanism without operator authorisation.
 
 ---
 
@@ -212,17 +209,14 @@ document is committed to the WR knowledge base.
 
 ## 6. Document control
 
-Author: Claude Code, on behalf of Quinn, mode (a) starting-point
-draft per Migration Plan §14.4.3. Operator review and Sarah's
-principal approval both required before this becomes the runtime
-baseline. Sarah's input on §1 (tone), §2 (proactivity), and §3
-(escalation) is the most important — those three categories carry
-most of the principal-specific signal; §4 (boundaries) and §5
-(format) are largely consistent across the EAs.
-
-Draft date: 2026-04-30.
-Source of truth (post-approval): `state/seeds/eas/sarah/style.md`.
-Cross-references: standing directives in
+Author: Claude Code, on behalf of Quinn, approved by operator and
+principal on 2026-04-30 per Migration Plan §14.4.3 / §14.4.5.
+Approval baseline date: 2026-04-30.
+Source of truth: this file (`dispatcher/state/seeds/eas/sarah/style.md`).
+Runtime read path: `$STATE_DIR/eas/sarah/style.md`, seeded from
+`state/seeds/eas/sarah/style.md` by `bootstrap.ts` on first boot.
+Iterative-update mechanism: see the `style-update` skill (Phase
+J.1 D2). Cross-references: standing directives in
 `~/claude-workspace/generic/CLAUDE.md` (SD-01 infrastructure bug
 fixes; SD-02 communication efficiency); architecture v2.1 §2.2.6
 (STYLE.md per EA); Migration Plan §14.4.3 / §14.4.5 (Sarah's
