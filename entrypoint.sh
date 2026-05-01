@@ -59,6 +59,24 @@ export R2_BUCKET
 ANTHROPIC_API_KEY=$(op read "op://CoS-Dispatcher/anthropic-api/credential")
 export ANTHROPIC_API_KEY
 
+# ── WR Workspace SA (Alex Morgan runtime) ────────────────────────────────────
+# Service account with Workspace domain-wide delegation that impersonates
+# `jeffdusting@waterroads.com.au`. Powers the `google-workspace-jeff` skill —
+# Alex's Gmail (drafts-only) and Calendar (read+write) capability. The SA JSON
+# is materialised to a per-volume path with restrictive permissions; the path
+# is exposed to workers via WR_ALEX_MORGAN_SA_KEY_PATH so the skill's helper
+# scripts can read it. Fail-closed: if the vault read fails, the container
+# exits and Fly restarts (matches architecture v2.1 §6.1).
+SECRETS_DIR=/data/.secrets
+mkdir -p "${SECRETS_DIR}"
+chown dispatcher:dispatcher "${SECRETS_DIR}"
+chmod 700 "${SECRETS_DIR}"
+WR_ALEX_MORGAN_SA_KEY_PATH="${SECRETS_DIR}/wr-alex-morgan-gcp-sa.json"
+op read "op://CoS-Dispatcher/drive-wr-alex-morgan/sa-json" > "${WR_ALEX_MORGAN_SA_KEY_PATH}"
+chown dispatcher:dispatcher "${WR_ALEX_MORGAN_SA_KEY_PATH}"
+chmod 600 "${WR_ALEX_MORGAN_SA_KEY_PATH}"
+export WR_ALEX_MORGAN_SA_KEY_PATH
+
 # ── Drop privileges ──────────────────────────────────────────────────────────
 # HOME must be set explicitly: gosu propagates the parent environ but does
 # not synthesise HOME for the target user. claude and bun both read $HOME
