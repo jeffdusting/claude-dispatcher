@@ -516,13 +516,19 @@ export function scopeWorkerEnv(
 }
 
 /** Check if stderr indicates a failed resume (stale/missing session). */
-function isResumeFailed(stderr: string): boolean {
+export function isResumeFailed(stderr: string): boolean {
   const lower = stderr.toLowerCase()
   return (
     lower.includes('session not found') ||
     lower.includes('could not find session') ||
     lower.includes('no session') ||
-    lower.includes('invalid session')
+    lower.includes('invalid session') ||
+    // Newer Claude Code phrasing observed 2026-05-02 after fly redeploys
+    // evicted session state across container respawns: "No conversation
+    // found with session ID: <uuid>". Catch the pattern so the dispatcher
+    // falls back to a fresh session rather than surfacing the resume
+    // failure to the operator.
+    lower.includes('no conversation found')
   )
 }
 
