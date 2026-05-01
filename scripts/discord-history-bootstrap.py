@@ -12,8 +12,20 @@ appropriate entity-scoped Supabase pgvector knowledge base.
 The script is chunked-execution-friendly: pass `--batch-channels N` to
 process the top N highest-traffic channels first, or
 `--include-channel <id>` (repeatable) to whitelist explicit channels.
-Use `--dry-run` to classify and count without writing to Supabase or
-calling Voyage.
+
+Three execution modes:
+
+  - Default (interactive): prints classification preview, prompts
+    `Proceed with wet ingestion? [y/N]`, embeds + upserts only on a
+    `y` / `yes` confirmation. Default-on-Enter is decline. Phase J
+    posture rule: each batch's classification is operator-reviewed
+    before any embedding cost or Supabase write.
+  - `--dry-run`: prints classification preview and runs the loop in
+    read-only mode (counts chunks, applies redaction in-memory).
+    Skips the prompt entirely. No Voyage calls, no Supabase writes.
+  - `--yes`: bypasses the prompt for non-interactive automation
+    (e.g. CI replaying an audit-recorded batch). Operator runs MUST
+    NOT pass `--yes`.
 
 Idempotency: each Discord message becomes one Supabase row keyed on
 `source_file = "discord-bootstrap-<channel-id>-<message-id>"`. The
@@ -367,6 +379,38 @@ def select_records(
     return selected
 
 
+def prompt_for_wet_run(
+    *,
+    input_fn=input,
+    output_stream=None,
+) -> bool:
+    """Interactive operator gate.
+
+    Returns True only on an unambiguous affirmative response (`y` or `yes`,
+    case-insensitive); any other input — including the bare-Enter default,
+    `n` / `no`, ambiguous input like `maybe` / `hmm`, or EOF — returns False.
+    The default-on-Enter behaviour is intentional: the operator must
+    actively confirm the wet run; the safe default is to decline.
+
+    The `input_fn` and `output_stream` parameters are seams for tests so
+    the suite does not need to drive process stdin.
+    """
+    if output_stream is None:
+        output_stream = sys.stderr
+    output_stream.write(
+        "\nProceed with wet ingestion?\n"
+        "  - 'y' or 'yes' to embed via Voyage and upsert to Supabase\n"
+        "  - anything else (including bare Enter, 'n', or ambiguous input) declines\n"
+        "Choice [y/N]: ",
+    )
+    output_stream.flush()
+    try:
+        raw = input_fn("")
+    except EOFError:
+        return False
+    return raw.strip().lower() in ("y", "yes")
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--archive", default=DEFAULT_ARCHIVE)
@@ -378,6 +422,13 @@ def main() -> int:
     p.add_argument("--include-channel", action="append")
     p.add_argument("--exclude-channel", action="append")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument(
+        "--yes", action="store_true",
+        help="Non-interactive: skip the wet-run confirmation prompt. Use only "
+             "in automation contexts where the classification preview has "
+             "already been reviewed (e.g. CI replaying an audit-recorded "
+             "batch). Interactive operator runs must NOT pass --yes.",
+    )
     p.add_argument("--verbose", action="store_true")
     p.add_argument(
         "--audit-path",
@@ -407,11 +458,34 @@ def main() -> int:
 
     # Show per-channel classification before doing any work.
     print("\nClassification preview:")
+    by_entity: dict[str, int] = {}
+    by_entity_chunks: dict[str, int] = {}
     for r in batch:
+        by_entity[r.entity] = by_entity.get(r.entity, 0) + 1
+        by_entity_chunks[r.entity] = by_entity_chunks.get(r.entity, 0) + r.message_count
         print(
             f"  [{r.entity:4}] {r.channel_id} {r.channel_type:14} "
             f"{r.message_count:>4} msgs  {r.name[:60]} ({r.entity_reason})"
         )
+    print("\nClassification summary:")
+    for entity, count in sorted(by_entity.items()):
+        print(
+            f"  {entity:4}: {count} channel(s), ~{by_entity_chunks.get(entity, 0)} "
+            f"messages → embedding + upsert"
+        )
+
+    # Operator gate (Phase J posture rule). The prompt is the explicit
+    # break between classification preview and the embedding + Supabase
+    # writes. --dry-run skips the wet path entirely (no prompt). --yes
+    # bypasses the prompt for automation use only.
+    if args.dry_run:
+        print("\n--dry-run: skipping wet ingestion entirely.\n")
+    elif args.yes:
+        print("\n--yes: bypassing operator confirmation (automation mode).\n")
+    else:
+        if not prompt_for_wet_run():
+            print("\nWet ingestion declined by operator. Exiting without changes.")
+            return 0
 
     # Initialise clients (skipped in dry-run).
     voyage_client = None
