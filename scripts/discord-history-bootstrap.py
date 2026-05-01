@@ -291,7 +291,7 @@ def ingest_batch(
                     continue
 
                 record = {
-                    "entity": "cbs" if rec.entity == "cbs" else "waterroads",
+                    "entity": "cbs-group" if rec.entity == "cbs" else "waterroads",
                     "source_file": source_file,
                     "title": (
                         f"Discord history: {rec.name[:80]} (msg {mid})"
@@ -303,6 +303,9 @@ def ingest_batch(
                     "category": "discord-history",
                     "metadata": json.dumps(metadata),
                 }
+                if rec.entity == "wr":
+                    record["drive_file_id"] = source_file
+                    record["drive_modified"] = ts
                 try:
                     target_supabase.table("documents").insert(record).execute()
                     out.chunks_inserted += 1
