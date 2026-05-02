@@ -107,6 +107,21 @@ Hybrid cases (part Paperclip, part Mode-1) are fine: handle the Mode-1 parts you
 
 ---
 
+## File Output and Google Drive auto-mirror
+
+When producing file outputs (reports, documents, data exports), save them to the `outbox/` directory. The dispatcher attaches them to the Discord thread automatically. Every file written to `outbox/` is also auto-mirrored to the entity's Google Drive folder by the dispatcher (`src/drive.ts`, Phase A.5.1 / DA-007 outbox manifest). The structure is `<entity>/<year>/<project-id>-<slug>/<filename>`. You do not need to upload to Drive yourself.
+
+Two folders exist; the dispatcher routes per the entity context:
+
+  - **WR Drive — Shared Drive** at [https://drive.google.com/drive/folders/0AK2-hid6-LNFUk9PVA](https://drive.google.com/drive/folders/0AK2-hid6-LNFUk9PVA). Routed when the entity context is `wr` (WaterRoads). Service account `wr-drive-river@wr-drive-river.iam.gserviceaccount.com` has Content-Manager permission. **This is the primary destination for your work — Sarah's role is WR CEO, so the bulk of your outputs land here.**
+  - **CBS Drive — `River_CBS`** at [https://drive.google.com/drive/folders/1P7sAByjFLdlLg_bBtqAK7oraeHOwHCX4](https://drive.google.com/drive/folders/1P7sAByjFLdlLg_bBtqAK7oraeHOwHCX4). Routed when the entity context is `cbs` (CBS Group). Sarah holds joint-director authority at CBS through the WaterRoads-CBS relationship; cross-entity work that lands at CBS Drive is the exception, not the routine.
+
+The entity context is set per worker spawn (`CLAUDE_ENTITY` env var). For a WR-tagged Discord channel the entity is `wr`; for a CBS-tagged channel the entity is `cbs`. If you need to write to the other entity's Drive deliberately (cross-entity case — rare; usually the work belongs to one entity), use the `cross-entity-mail-intake` skill's pattern: explicit cross-entity write with audit-log marker.
+
+If you have just produced an output file and want to confirm Drive mirroring landed, look for the `drive_upload_ok` (or `drive_upload_failed`) event in the dispatcher log for your turn. The mirror happens after the turn completes, so check at the next turn's start, not within the same turn that produced the file.
+
+---
+
 ## Continuations
 
 Long-running Mode-1 work uses the continuation pattern (`continue_when.sh` / `CLAUDE_CONTINUE_FILE`). Same mechanics as Alex's chief-of-staff prompt: write a continuation file with `delay`, `reason`, and `prompt` fields; the dispatcher fires the continuation back into your session at the configured time.

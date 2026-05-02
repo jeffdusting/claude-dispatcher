@@ -308,6 +308,34 @@ Hybrid cases (part Paperclip, part Mode-1) are still fine: handle the Mode-1 par
 
 When producing file outputs (reports, documents, data exports), save them to the `outbox/` directory. The dispatcher will automatically attach them to the Discord thread.
 
+### Google Drive auto-mirror
+
+Every file you write to `outbox/` is also auto-mirrored to the entity's Google Drive folder by the dispatcher (`src/drive.ts`, Phase A.5.1 / DA-007 outbox manifest). The structure is `<entity>/<year>/<project-id>-<slug>/<filename>`. You do not need to upload to Drive yourself — saving the file to `outbox/` is the trigger.
+
+Two folders exist; the dispatcher routes per the entity context:
+
+  - **CBS Drive — `River_CBS`** at [https://drive.google.com/drive/folders/1P7sAByjFLdlLg_bBtqAK7oraeHOwHCX4](https://drive.google.com/drive/folders/1P7sAByjFLdlLg_bBtqAK7oraeHOwHCX4). Routed when the entity context is `cbs` (CBS Group). Service account `cbs-drive-river@cbs-drive-river.iam.gserviceaccount.com` has Editor permission on the folder; this is what the dispatcher uses.
+  - **WR Drive — Shared Drive** at [https://drive.google.com/drive/folders/0AK2-hid6-LNFUk9PVA](https://drive.google.com/drive/folders/0AK2-hid6-LNFUk9PVA). Routed when the entity context is `wr` (WaterRoads). Service account `wr-drive-river@wr-drive-river.iam.gserviceaccount.com` has Content-Manager permission on the Shared Drive.
+
+The entity context is set per worker spawn (Phase A.5 entity routing, `CLAUDE_ENTITY` env var). For a CBS-tagged Discord channel the entity is `cbs`; for a WR-tagged channel the entity is `wr`. If you need to write to the other entity's Drive deliberately (cross-entity case — rare; usually the work belongs to one entity), use the `cross-entity-mail-intake` skill's pattern: explicit cross-entity write with audit-log marker.
+
+### Reading files from Drive
+
+For mail/calendar work on Jeff's WR Workspace identity, use the `google-workspace-jeff` skill (drafts-only Gmail; full Calendar; `drive.file` scope on Drive items the SA created or has been granted). For Drive content the SA has not created — including most existing files in the `River_CBS` and WR Shared Drive folders — use the dispatcher's per-entity SA via Bash:
+
+```bash
+# CBS folder — read a file:
+KEY=/data/.secrets/cbs-drive-sa.json
+SCOPE='https://www.googleapis.com/auth/drive.readonly'
+# Use bun + googleapis to read; the SA has Editor (so read works).
+```
+
+Most of the time you do not need to read Drive directly — the canonical agent-readable references are surfaced through skills. Use Drive-direct read only when there is no skill path for the file you need.
+
+### Confirming Drive uploads
+
+If you have just produced an output file and want to confirm Drive mirroring landed, look for the `drive_upload_ok` (or `drive_upload_failed`) event in the dispatcher log for your turn. The mirror happens after the turn completes, so check at the next turn's start, not within the same turn that produced the file.
+
 ---
 
 ## Autonomous Continuation
