@@ -84,7 +84,7 @@ export interface ProjectArtifact {
  * to `'jeff'`); the `scripts/backfill-project-descriptors.ts` migrates
  * older records on disk.
  */
-export const PROJECT_SCHEMA_VERSION = 3 as const
+export const PROJECT_SCHEMA_VERSION = 4 as const
 
 /**
  * Default partition assignment for legacy / un-tagged projects. Pre-J.1a
@@ -152,7 +152,18 @@ export interface ProjectRecord {
    * descriptors via `normaliseProjectRecord`.
    */
   owningEA: string
-  /** On-disk schema version. Current writers always set this to 3. */
+  /**
+   * Project Manager name allocated from the roster at
+   * `config/pm-name-roster.json` (Option C — persistent named roster). The
+   * PM signs Discord posts with this name so concurrent projects are
+   * distinguishable. Optional on the record so legacy descriptors created
+   * before schemaVersion 4 do not fail validation; the runtime allocates a
+   * name lazily if missing. Reuse-after-completion is supported — audit
+   * logs always carry the project ID alongside the name for unambiguous
+   * historical reconstruction.
+   */
+  pmName?: string
+  /** On-disk schema version. Current writers always set this to 4. */
   schemaVersion: number
 }
 
@@ -231,6 +242,9 @@ export function normaliseProjectRecord(
           ((raw as { eaOwner: string }).eaOwner).length > 0
         ? (raw as { eaOwner: string }).eaOwner
         : DEFAULT_OWNING_EA
+  // v4 field: pmName. Optional — legacy descriptors keep undefined until a
+  // future allocation pass fills it in. The runtime tolerates undefined.
+  const pmName = typeof raw.pmName === 'string' && raw.pmName.length > 0 ? raw.pmName : undefined
 
   return {
     ...(raw as unknown as ProjectRecord),
@@ -238,6 +252,7 @@ export function normaliseProjectRecord(
     paperclipTaskIds,
     correlationId,
     owningEA,
+    pmName,
     schemaVersion,
   }
 }
@@ -271,10 +286,33 @@ export function createProject(opts: {
    *  Phase J.1b adds Quinn's partition. Future EAs pass an explicit
    *  partition name. */
   owningEA?: string
+  /** Override allocator — tests pass a specific name. Production callers
+   *  leave this undefined and rely on `allocatePMName` from the roster. */
+  pmName?: string
 }): ProjectRecord {
   const now = Date.now()
+  const id = newProjectId()
+  // Allocate a PM name from the roster (Option C — persistent named
+  // roster, R-952 sibling). Imported lazily to avoid the projects → roster
+  // → projects circular import (the roster reads project records to find
+  // names in use).
+  const allocator = opts.pmName
+    ? { name: opts.pmName, fallback: false }
+    : (() => {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const mod = require('./pmNameRoster.js') as typeof import('./pmNameRoster.js')
+          return mod.allocatePMName({ projectId: id })
+        } catch (err) {
+          logDispatcher('pm_name_allocation_failed', {
+            projectId: id,
+            error: String(err),
+          })
+          return { name: `PM-${id.replace(/^p-/, '').slice(0, 8)}`, fallback: true }
+        }
+      })()
   const record: ProjectRecord = {
-    id: newProjectId(),
+    id,
     name: opts.name.slice(0, 120),
     brief: opts.brief,
     threadId: null,
@@ -285,11 +323,12 @@ export function createProject(opts: {
     maxParallelWorkers: opts.maxParallelWorkers ?? 3,
     tasks: [],
     artifacts: [],
-    log: [{ at: now, note: 'Project created.' }],
+    log: [{ at: now, note: `Project created. PM: ${allocator.name}` }],
     entity: opts.entity ?? DEFAULT_ENTITY,
     paperclipTaskIds: [],
     correlationId: randomUUID(),
     owningEA: opts.owningEA ?? DEFAULT_OWNING_EA,
+    pmName: allocator.name,
     schemaVersion: PROJECT_SCHEMA_VERSION,
   }
   writeProjectFile(projectPath(record.id), record)
@@ -298,6 +337,7 @@ export function createProject(opts: {
     name: record.name,
     entity: record.entity,
     owningEA: record.owningEA,
+    pmName: record.pmName,
     correlationId: record.correlationId,
   })
   return record

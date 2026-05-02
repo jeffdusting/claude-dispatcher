@@ -176,7 +176,7 @@ describe('projects — owningEA backfill (v2→v3, Phase J.1a §14.3.2)', () => 
     expect(rec.owningEA).toBe(DEFAULT_OWNING_EA)
   })
 
-  test('PROJECT_SCHEMA_VERSION advanced to 3', () => {
-    expect(PROJECT_SCHEMA_VERSION).toBe(3)
+  test('PROJECT_SCHEMA_VERSION advanced to 4 (pmName field added)', () => {
+    expect(PROJECT_SCHEMA_VERSION).toBe(4)
   })
 })
