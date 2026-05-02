@@ -1,0 +1,55 @@
+# Hermes shadow app — Nous Research Hermes Agent shadowing Alex.
+# Read-only pilot per R-940 §13. New Fly app cos-hermes-shadow-jeff in syd.
+
+app = "cos-hermes-shadow-jeff"
+primary_region = "syd"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  STATE_DIR = "/data/state"
+  HERMES_HOME = "/data/.hermes"
+  COMPARISON_REGISTER_DIR = "/data/state/hermes-shadow-comparison"
+  SHADOW_INPUT_DIR = "/data/state/hermes-shadow-input"
+  SKILL_GATE_AUDIT = "/data/state/hermes-skill-gate-audit.jsonl"
+  HERMES_LLM_PROVIDER = "anthropic"
+  HERMES_LLM_MODEL = "claude-opus-4-7"
+  HERMES_PILOT_PRINCIPAL = "jeff"
+  # Read-only enforcement — these env vars are read by runner.py to refuse
+  # any tool call that mutates external state. Belt-and-braces alongside
+  # the architectural constraint that Hermes does not have credentials for
+  # Discord / mail / calendar / Drive / Paperclip.
+  SHADOW_READ_ONLY = "true"
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+    force_https = true
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+
+  [[services.http_checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "get"
+    path = "/health"
+
+[[mounts]]
+  source = "shadow_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+  cpus = 1
