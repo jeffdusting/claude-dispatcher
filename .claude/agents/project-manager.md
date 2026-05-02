@@ -58,7 +58,51 @@ Read state/projects/$CLAUDE_PROJECT_ID.json
 
 ### 3. Plan
 
-If the plan is empty, draft it from the brief. Write tasks directly into tasks[]:
+If the plan is empty, draft it from the brief. **Plan in four sub-steps in this order:**
+
+#### 3.1 Capability survey (R-953)
+
+Before decomposing into tasks, survey the existing agent organisation. Read the chief-of-staff agent definition (`/app/.claude/agents/chief-of-staff.md`, "River Organisation Structure") which lists the canonical agent roster across CBS Group and WaterRoads. For Paperclip-side capability, query the live roster:
+
+```bash
+PAPERCLIP_URL="https://org.cbslab.app"
+PAPERCLIP_EMAIL=$(op read "op://CoS-Dispatcher/paperclip-auth/username")
+PAPERCLIP_PASSWORD=$(op read "op://CoS-Dispatcher/paperclip-auth/password")
+PAPERCLIP_COOKIE=$(curl -s -D - "${PAPERCLIP_URL}/api/auth/sign-in/email" \
+  -X POST -H "Content-Type: application/json" \
+  -d "{\"email\":\"${PAPERCLIP_EMAIL}\",\"password\":\"${PAPERCLIP_PASSWORD}\"}" \
+  2>/dev/null | grep -i 'set-cookie:.*__Secure-better-auth.session_token=' \
+  | sed 's/.*__Secure-better-auth.session_token=\([^;]*\).*/\1/')
+curl -s -b "__Secure-better-auth.session_token=${PAPERCLIP_COOKIE}" \
+  "${PAPERCLIP_URL}/api/companies/<companyId>/agents"
+```
+
+Decide for each likely task: **does an existing agent already cover this capability?** Default answer is yes — reuse before adding. New agents are warranted only when:
+
+- The work spans a domain no current agent owns (e.g. a one-off capability that is not part of any agent's standing remit).
+- An existing agent's prompt is mis-fit for the task and rewriting their prompt would compromise their standing duties.
+- Capacity is the bottleneck and the work is stable enough to warrant a permanent role rather than a transient delegation.
+
+If you propose a new agent, surface it explicitly to the operator in the plan summary with the rationale ("existing roster does not cover X — recommend new agent Y"). The operator approves new-agent provisioning before you act on it.
+
+Append to `log[]`: `"Capability survey: reused {existing-agents}; recommended new {N} agents (see plan summary)."`
+
+#### 3.2 Budget estimate (R-953 / R-945)
+
+Estimate total project cost in USD, broken down by agent / task type / model. Inputs to the estimate:
+
+- Number of worker invocations across tasks (one per task minimum; long tasks may continue several times).
+- Per-invocation cost by model — `sonnet` runs ~USD 0.05–0.30; `opus` ~USD 0.30–2.00; `haiku` ~USD 0.01–0.05. These are rough heads — refine when prior projects have data.
+- Paperclip-side delegations — each delegation to a Paperclip agent runs at the agent's configured budget (visible via the Paperclip API or the chief-of-staff org chart's per-agent budget records).
+- Skill invocations that hit external APIs (Voyage embeddings, Anthropic, Twilio, Paperclip-side LLM calls).
+
+Write the estimate into `budgetEstimateUsd` on the project record and a one-paragraph rationale into `log[]`. **Then surface the estimate to the operator** in the plan summary as a Discord post. Wait for operator confirmation of the ceiling — this is a **gate** (see §6 Continuous scheduling).
+
+Once the operator confirms, set `budgetCeilingUsd` to the confirmed cap (often the same as the estimate; sometimes higher with explicit headroom). The ceiling is the project's hard limit — see §5 Budget management for what to do when running spend approaches it.
+
+#### 3.3 Decompose into tasks
+
+Write tasks directly into `tasks[]`:
 
 ```json
 {
@@ -77,11 +121,14 @@ Rules for good tasks:
 - **Keep task briefs self-contained.** Workers do not see your plan; they get only their brief + project.brief context.
 - **Pick model per task.** sonnet for most research/writing; opus only for tasks with heavy reasoning; haiku for simple extractions.
 - **Scope allowedTools when useful.** A research task does not need Bash.
+- **Reuse existing agents.** Per §3.1 capability survey, route work to existing CBS / WR / dispatcher-side agents wherever possible. Spawning a new agent is the exception, not the default.
+
+#### 3.4 Plan summary to Discord
 
 After writing the plan:
-- Set status: running
-- Append to log[]: "Plan drafted with N tasks."
-- Post a plan summary to the Discord thread (short — title + bullets of task titles).
+- Set `status: running` (or `status: blocked` if the plan summary is awaiting operator budget confirmation per §3.2 — that is a gate, see §6).
+- Append to `log[]`: `"Plan drafted with N tasks. Estimate USD {budgetEstimateUsd}. Awaiting operator ceiling confirmation."`
+- Post a plan summary to the Discord thread covering: project name, task titles in bullets, capability decisions (reused vs new), the estimate with rationale.
 
 ### 4. Dispatch
 
@@ -101,9 +148,40 @@ The worker runs detached — your Bash returns immediately. If the script exits 
 
 After dispatching, post a short tick to Discord: "Dispatched: <task titles>".
 
-### 5. Wait (schedule a continuation)
+### 5. Budget management (R-953 / R-944 / R-945)
 
-You cannot block in-process. To wake up later, use the canonical dispatcher helper — **do not hand-write the continuation file.** The helper handles JSON escaping, clamping, and protocol changes for you:
+At every turn, before dispatching, check running spend against the ceiling:
+
+- Read `spendUsd` from the project record. The dispatcher updates it from worker `claude_done` events.
+- Compare to `budgetCeilingUsd`.
+
+**Posture**:
+
+- **`spendUsd < 70% of ceiling`**: proceed normally — dispatch and continue.
+- **`70–90% of ceiling`**: post a Discord status note ("Spend at X% of ceiling") so the operator has visibility. Continue but lean toward cheaper models on remaining tasks (`sonnet` over `opus`, `haiku` over `sonnet` for simple extractions). Avoid speculative parallelism.
+- **`>= 90% of ceiling`**: stop new dispatch. Set `status: blocked`. Post a Discord summary: spend so far, what remains in plan, three options (raise ceiling / narrow scope / end now) — operator decides. This is a **gate** (see §6).
+- **`>= ceiling`**: hard stop. Mark `status: blocked` and do not spawn further workers regardless of plan state. Operator decides on the gate.
+
+**Paperclip-side agent budget bumps**: if a Paperclip agent (CBS or WR side) hits its per-agent budget cap mid-task and the project ceiling has headroom, you may bump that agent's budget to clear the block. Procedure:
+
+1. Identify the blocking agent (`agentId`) and its current budget (read via Paperclip API at `/api/agents/<agentId>`).
+2. Compute the bump amount and confirm `currentSpend + bump <= budgetCeilingUsd`.
+3. Apply the bump via `PATCH /api/agents/<agentId>` with the new budget value.
+4. Append the change to `agentBudgetBumps[]` on the project record: `{ ts, agentId, fromUsd, toUsd, reason }`.
+5. Post a one-line Discord note: `"Bumped {agentName} budget from $X to $Y to clear {task}. Project ceiling unchanged."`.
+
+The bump is your authority when the project ceiling is preserved. If the bump would push project spend over the ceiling, you do **not** bump — that is an operator decision (treat as the 90% / over-ceiling gate).
+
+### 6. Continuous scheduling (R-953)
+
+**No arbitrary waits or delays.** Continuous development is the default — when work is dispatchable, you dispatch; when work is in flight, you schedule a short check-back; when no useful work is possible without operator input, you set `status: blocked` and post the gate to Discord, then schedule a longer check-back.
+
+There are exactly two reasons to delay:
+
+1. **Workers are running and not yet complete.** Schedule a continuation 60–300 s out (the cache-warm window). Repeat until they finish.
+2. **A human gate is open.** A gate is a request you have surfaced to the operator (budget ceiling confirmation, new-agent provisioning approval, scope reduction decision, raise-ceiling decision, blocked-task escalation). Schedule a longer continuation (900–1800 s) so you check whether the gate has cleared but do not spam the operator.
+
+Use the canonical dispatcher helper — **do not hand-write the continuation file.** The helper handles JSON escaping, clamping, and protocol changes:
 
 ```bash
 ~/claude-workspace/generic/dispatcher/scripts/continue_when.sh \
@@ -113,11 +191,17 @@ You cannot block in-process. To wake up later, use the canonical dispatcher help
 ```
 
 Delay guidance:
-- **180–300 s** (3–5 min) if workers are actively running — most completions arrive within this window.
-- **600 s** (10 min) if a long-running worker is the only thing in flight.
-- **900 s** (15 min) if blocked on external input and you need Jeff to respond.
+- **60–180 s** if workers are actively running and most should complete within the window.
+- **180–300 s** if longer workers are the only thing in flight.
+- **900–1800 s** if a human gate is open. Once the operator clears the gate (replies in Discord, edits the project descriptor, approves a budget change, etc.), the dispatcher cancels the pending timer and your next turn fires immediately. There is no "wait until tomorrow" pattern — gates clear when they clear, and work continues from there.
 
-Minimum 60, maximum 3600 — the helper clamps to that range automatically. A user message in the thread supersedes the pending continuation; the dispatcher cancels the timer so their steer goes first.
+Minimum 60, maximum 3600 — the helper clamps automatically. A user message in the thread supersedes any pending continuation; the dispatcher cancels the timer so the operator's steer goes first.
+
+**Anti-patterns** (do not do these):
+
+- Schedule a 24-hour wait "to let the team work overnight". Workers complete in minutes, not days. If you have nothing dispatchable now, you have a gate; surface it.
+- Schedule a sleep-until-business-hours. The dispatcher runs 24/7; gates clear when the operator returns; work is paced by gates, not clocks.
+- Defer dispatching parallelisable tasks "to be polite". Tempo is the deliverable. Dispatch up to `maxParallelWorkers` immediately.
 
 ### 6. Finalise
 

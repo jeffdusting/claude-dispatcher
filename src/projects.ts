@@ -84,7 +84,7 @@ export interface ProjectArtifact {
  * to `'jeff'`); the `scripts/backfill-project-descriptors.ts` migrates
  * older records on disk.
  */
-export const PROJECT_SCHEMA_VERSION = 4 as const
+export const PROJECT_SCHEMA_VERSION = 5 as const
 
 /**
  * Default partition assignment for legacy / un-tagged projects. Pre-J.1a
@@ -163,7 +163,49 @@ export interface ProjectRecord {
    * historical reconstruction.
    */
   pmName?: string
-  /** On-disk schema version. Current writers always set this to 4. */
+  /**
+   * PM-estimated total project cost in USD, set at planning time.
+   * The PM proposes the estimate; the operator confirms (Discord interaction
+   * gate); the value is stored here for the project's lifetime as the
+   * baseline against which spend is compared. Optional on the record so
+   * legacy descriptors created before schemaVersion 5 do not fail validation.
+   * R-953 / R-945.
+   */
+  budgetEstimateUsd?: number
+  /**
+   * Operator-confirmed project ceiling in USD. The PM must manage to this
+   * ceiling — if running spend approaches the ceiling, the PM alerts the
+   * operator and stops further spend until the operator decides whether to
+   * raise the ceiling, narrow scope, or end the project. Defaults to
+   * `budgetEstimateUsd` if the operator confirms the estimate as the cap
+   * (the common case). Optional. R-953 / R-945.
+   */
+  budgetCeilingUsd?: number
+  /**
+   * Running USD spend across all worker invocations and Paperclip-side
+   * agent calls attributed to this project. Updated by the dispatcher when
+   * worker `claude_done` events report a `cost` value. Read by the PM at
+   * each turn so it can pace itself against the ceiling. Optional; legacy
+   * descriptors and projects with no recorded spend yet read this as 0.
+   * R-953 / R-944.
+   */
+  spendUsd?: number
+  /**
+   * Audit trail of Paperclip-side agent budget increases the PM has
+   * requested or applied. Each entry: { ts, agentId, fromUsd, toUsd, reason }.
+   * The PM may bump an agent's budget to clear a Paperclip-side cap that is
+   * blocking the project — but only when the project ceiling is preserved
+   * (the PM offsets the bump elsewhere within the project). The audit trail
+   * lets the operator reconstruct who raised what when. Optional. R-953.
+   */
+  agentBudgetBumps?: Array<{
+    ts: number
+    agentId: string
+    fromUsd: number
+    toUsd: number
+    reason: string
+  }>
+  /** On-disk schema version. Current writers always set this to 5. */
   schemaVersion: number
 }
 
@@ -245,6 +287,15 @@ export function normaliseProjectRecord(
   // v4 field: pmName. Optional — legacy descriptors keep undefined until a
   // future allocation pass fills it in. The runtime tolerates undefined.
   const pmName = typeof raw.pmName === 'string' && raw.pmName.length > 0 ? raw.pmName : undefined
+  // v5 fields: budget envelope (R-953 / R-945). All optional. Legacy
+  // descriptors normalise without budgets — the PM running on a legacy
+  // project must propose an estimate at the next planning turn.
+  const budgetEstimateUsd = typeof raw.budgetEstimateUsd === 'number' ? raw.budgetEstimateUsd : undefined
+  const budgetCeilingUsd = typeof raw.budgetCeilingUsd === 'number' ? raw.budgetCeilingUsd : undefined
+  const spendUsd = typeof raw.spendUsd === 'number' ? raw.spendUsd : undefined
+  const agentBudgetBumps = Array.isArray(raw.agentBudgetBumps)
+    ? (raw.agentBudgetBumps as ProjectRecord['agentBudgetBumps'])
+    : undefined
 
   return {
     ...(raw as unknown as ProjectRecord),
@@ -253,6 +304,10 @@ export function normaliseProjectRecord(
     correlationId,
     owningEA,
     pmName,
+    budgetEstimateUsd,
+    budgetCeilingUsd,
+    spendUsd,
+    agentBudgetBumps,
     schemaVersion,
   }
 }
@@ -381,6 +436,28 @@ export function appendProjectLog(id: string, note: string): void {
     })
   } catch (err) {
     logDispatcher('project_log_append_failed', { id, error: String(err) })
+  }
+}
+
+/**
+ * Increment the project's running USD spend total. Called when a worker
+ * `claude_done` event reports a `cost` value attributable to this project.
+ * No-op if the project does not exist (race against archive) or if cost is
+ * non-positive (Claude returns null for stale-cache hits).
+ *
+ * R-953 / R-944: gives the PM a running view of project spend so it can
+ * pace itself against the operator-confirmed `budgetCeilingUsd`.
+ */
+export function addProjectSpend(id: string, costUsd: number): void {
+  if (!Number.isFinite(costUsd) || costUsd <= 0) return
+  try {
+    updateProject(id, (r) => {
+      r.spendUsd = (r.spendUsd ?? 0) + costUsd
+      return r
+    })
+    logDispatcher('project_spend_increment', { id, addedUsd: costUsd })
+  } catch (err) {
+    logDispatcher('project_spend_increment_failed', { id, error: String(err) })
   }
 }
 
