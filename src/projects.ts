@@ -84,7 +84,7 @@ export interface ProjectArtifact {
  * to `'jeff'`); the `scripts/backfill-project-descriptors.ts` migrates
  * older records on disk.
  */
-export const PROJECT_SCHEMA_VERSION = 5 as const
+export const PROJECT_SCHEMA_VERSION = 6 as const
 
 /**
  * Default partition assignment for legacy / un-tagged projects. Pre-J.1a
@@ -205,7 +205,18 @@ export interface ProjectRecord {
     toUsd: number
     reason: string
   }>
-  /** On-disk schema version. Current writers always set this to 5. */
+  /**
+   * Drive folder URL for this project's auto-mirrored output (R-940 follow-
+   * up; operator directive 2026-05-02). Populated at PM kickoff by
+   * `ensureProjectDriveFolder` so the folder is visible in the entity Drive
+   * even before the project produces its first output. PM reads this field
+   * on every turn to know where outputs land. Optional — legacy descriptors
+   * created before schemaVersion 6 do not fail validation; the field
+   * populates on the next kickoff.
+   */
+  driveFolderUrl?: string
+  driveFolderId?: string
+  /** On-disk schema version. Current writers always set this to 6. */
   schemaVersion: number
 }
 
@@ -296,6 +307,9 @@ export function normaliseProjectRecord(
   const agentBudgetBumps = Array.isArray(raw.agentBudgetBumps)
     ? (raw.agentBudgetBumps as ProjectRecord['agentBudgetBumps'])
     : undefined
+  // v6 fields: Drive folder URL + ID populated at PM kickoff. Optional.
+  const driveFolderUrl = typeof raw.driveFolderUrl === 'string' && raw.driveFolderUrl.length > 0 ? raw.driveFolderUrl : undefined
+  const driveFolderId = typeof raw.driveFolderId === 'string' && raw.driveFolderId.length > 0 ? raw.driveFolderId : undefined
 
   return {
     ...(raw as unknown as ProjectRecord),
@@ -308,6 +322,8 @@ export function normaliseProjectRecord(
     budgetCeilingUsd,
     spendUsd,
     agentBudgetBumps,
+    driveFolderUrl,
+    driveFolderId,
     schemaVersion,
   }
 }

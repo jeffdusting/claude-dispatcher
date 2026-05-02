@@ -176,7 +176,7 @@ describe('projects — owningEA backfill (v2→v3, Phase J.1a §14.3.2)', () => 
     expect(rec.owningEA).toBe(DEFAULT_OWNING_EA)
   })
 
-  test('PROJECT_SCHEMA_VERSION advanced to 5 (budget envelope added — R-953)', () => {
-    expect(PROJECT_SCHEMA_VERSION).toBe(5)
+  test('PROJECT_SCHEMA_VERSION advanced to 6 (drive folder URL/ID — R-940 follow-up)', () => {
+    expect(PROJECT_SCHEMA_VERSION).toBe(6)
   })
 })

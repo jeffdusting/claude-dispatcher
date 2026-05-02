@@ -488,6 +488,42 @@ export function folderUrl(folderId: string): string {
   return `https://drive.google.com/drive/folders/${folderId}`
 }
 
+/**
+ * Ensure a Drive folder exists for a project at PM kickoff (R-940 follow-up;
+ * operator directive 2026-05-02). Creates the folder under the entity's
+ * root if it does not yet exist; returns the folder ID + URL. Idempotent —
+ * re-runs return the same folder.
+ *
+ * The folder structure is the existing per-thread layout used by
+ * `uploadOutboxFiles`: `<entity-root>/<sanitised-thread-name>/`. PM kickoff
+ * pre-creates the folder so the operator can browse the project's Drive
+ * destination from the start, even before any output has been produced.
+ *
+ * No-op (returns null) when Drive is not enabled for the entity (missing SA
+ * key file or folder ID) — caller logs but does not block.
+ */
+export async function ensureProjectDriveFolder(opts: {
+  entity: Entity
+  threadId: string
+  threadTitle: string
+}): Promise<{ folderId: string; url: string } | null> {
+  if (!driveEnabled(opts.entity)) return null
+  const drive = getClient(opts.entity)
+  if (!drive) return null
+  try {
+    const folderId = await getThreadFolder(opts.entity, drive, opts.threadId, opts.threadTitle)
+    return { folderId, url: folderUrl(folderId) }
+  } catch (err) {
+    logDispatcher('drive_ensure_project_folder_failed', {
+      entity: opts.entity,
+      threadId: opts.threadId,
+      threadTitle: opts.threadTitle,
+      error: String(err).slice(0, 200),
+    })
+    return null
+  }
+}
+
 export async function getThreadFolderUrl(
   threadId: string,
   threadTitle: string | null,
