@@ -5,3 +5,11 @@
 # Hourly backup of STATE_DIR to R2, with verification round-trip.
 # Per Migration Plan §5.2.1 / Architecture v2.1 §5.3.
 0 * * * * /app/scripts/backup.sh
+
+# Sweep stale drafts whose threads the principal has already replied to
+# directly (R-952). Runs every 30 minutes — the principal's own send has
+# already landed by the time the sweep runs, and same-tick cleanup is not
+# required. WR_ALEX_MORGAN_SA_KEY_PATH is exported by entrypoint.sh and
+# inherited by supercronic; we set it explicitly here as a belt-and-braces
+# guard for fresh shells.
+*/30 * * * * env WR_ALEX_MORGAN_SA_KEY_PATH=/data/.secrets/wr-alex-morgan-gcp-sa.json bun /app/scripts/google-workspace/sweep-stale-drafts.ts

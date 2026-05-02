@@ -198,6 +198,16 @@ export async function runSession(opts: {
   ) as Promise<SessionResult>
 }
 
+function pmNameForThread(projectId: string | undefined): string | undefined {
+  if (!projectId) return undefined
+  try {
+    const project = getProject(projectId)
+    return project?.pmName ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
 function correlationIdForThread(projectId: string | undefined): string | undefined {
   if (!projectId) return undefined
   try {
@@ -283,6 +293,7 @@ async function runSessionInner(opts: {
       correlationId,
       continueFile,
       projectId: threadRecord?.projectId,
+      pmName: pmNameForThread(threadRecord?.projectId),
     }),
   })
 
@@ -468,6 +479,13 @@ export function buildWorkerSpawnEnv(opts: {
   correlationId: string
   continueFile: string | null
   projectId: string | undefined
+  /**
+   * PM display name (Option C — persistent named roster). Set when the
+   * worker being spawned is the project-manager agent so the PM signs
+   * Discord posts with the named identity rather than a generic "Project
+   * Manager" voice. Undefined for non-PM workers.
+   */
+  pmName?: string
 }): Record<string, string> {
   return scopeWorkerEnv(opts.entity, {
     CLAUDE_PROJECT_DIR: PROJECT_DIR,
@@ -483,6 +501,9 @@ export function buildWorkerSpawnEnv(opts: {
     // When the thread belongs to a Mode-3 project, surface the project ID
     // so the PM and any in-session tools can locate the state file.
     ...(opts.projectId ? { CLAUDE_PROJECT_ID: opts.projectId } : {}),
+    // PM display name from the roster, when allocated. Read by the
+    // project-manager agent prompt; used as the signature on Discord posts.
+    ...(opts.pmName ? { CLAUDE_PM_NAME: opts.pmName } : {}),
   })
 }
 

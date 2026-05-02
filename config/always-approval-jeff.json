@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "principal": "jeff",
+  "description": "Always-approval overlay for Alex (Jeff's EA). Senders matching this overlay route to the approval lane regardless of what the lane classifier said. Mirrors the pre-migration laptop runtime overlay (jeff_only_topics resolution + categorical board/investor/regulator/government/legal forcing). Adjust deliberately — adding a counterparty here keeps every future message in approval.",
+  "updatedAt": "2026-05-02",
+  "counterpartyIds": [
+    "sarah-taylor-waterroads",
+    "sarah-taylor-cbs"
+  ],
+  "categories": [
+    "board",
+    "investor",
+    "regulator",
+    "government",
+    "legal"
+  ],
+  "domains": [
+    "sarahjanetaylor/waterroads.com.au"
+  ],
+  "notes": [
+    "Counterparty IDs match slug filenames in data/counterparties/ when those land cloud-side (R-942 KB updates).",
+    "Categories match counterparty profile category field.",
+    "Domain entries are bare domain (matches anyone @domain) or user/domain shorthand for user@domain (matches one specific email).",
+    "Government domains are caught generically by isGovernmentDomain in alwaysApproval.ts — explicit listing here is for non-gov senders that still warrant approval.",
+    "Counterparty profiles with non-empty jeff_only_topics are honoured implicitly by alwaysApproval.ts."
+  ]
+}

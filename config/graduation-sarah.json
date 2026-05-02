@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "principal": "sarah",
+  "description": "Per-EA graduation config for Quinn. Lanes listed in autonomousLanes are graduated to autonomous-send. EMPTY by default — drafts-only is preserved until the operator deliberately graduates a lane.",
+  "updatedAt": "2026-05-02",
+  "autonomousLanes": [],
+  "notes": [
+    "Quinn's graduation set is independent from Alex's — Sarah graduates her own categories at her own pace.",
+    "Same advisory as the Jeff-side config: 'autonomous' is the only sensible first graduation candidate. 'approval' and 'principal_only' should never appear here."
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "principal": "sarah",
+  "description": "Always-approval overlay for Quinn (Sarah's EA). Mirrors the Jeff-side defaults at issue date — Sarah customises this list as her own counterparty graph develops. Initial state: same five categorical forcings (board/investor/regulator/government/legal); Jeff's CBS counterparty IDs and his own profile-flagged domain mapped into Sarah's overlay symmetrically.",
+  "updatedAt": "2026-05-02",
+  "counterpartyIds": [
+    "jeff-dusting-waterroads",
+    "jeff-dusting-cbs"
+  ],
+  "categories": [
+    "board",
+    "investor",
+    "regulator",
+    "government",
+    "legal"
+  ],
+  "domains": [
+    "jeff/cbs.com.au",
+    "jeff/cbsaustralia.com.au"
+  ],
+  "notes": [
+    "Sarah's overlay starts identical in shape to Jeff's. Quinn's audit log will surface where Sarah's preferences diverge once she has been running.",
+    "When Sarah's counterparty graph populates (post-onboarding), the counterpartyIds list grows independently of Jeff's."
+  ]
+}

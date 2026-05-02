@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "principal": "jeff",
+  "description": "Per-EA graduation config for Alex. Lanes listed in autonomousLanes are graduated to autonomous-send. EMPTY by default — drafts-only is preserved until the operator deliberately graduates a lane.",
+  "updatedAt": "2026-05-02",
+  "autonomousLanes": [],
+  "notes": [
+    "To graduate a lane, edit autonomousLanes and append the lane name. The next dispatcher cycle picks up the change. The history field records every change for audit.",
+    "Even when a lane is graduated, the always-approval overlay (config/always-approval-jeff.json) may still force approval for specific counterparties.",
+    "Recommended first graduation candidate (when the operator is ready): 'autonomous' lane only — covers acks, calendar proposals, scheduling, and routine internal-domain replies. Avoid graduating 'approval' or 'principal_only' — those are intentionally never autonomous."
+  ]
+}
