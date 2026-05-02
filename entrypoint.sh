@@ -77,6 +77,31 @@ chown dispatcher:dispatcher "${WR_ALEX_MORGAN_SA_KEY_PATH}"
 chmod 600 "${WR_ALEX_MORGAN_SA_KEY_PATH}"
 export WR_ALEX_MORGAN_SA_KEY_PATH
 
+# ── Per-entity Drive SAs (CBS + WR) ──────────────────────────────────────────
+# src/drive.ts uses these to route outbox file uploads to per-entity Drive
+# folders (Phase A.5.1 — DA-007 outbox manifest). Each SA must be granted
+# Editor permission on its corresponding folder; the dispatcher uploads under
+# `<entity>/<year>/<project-id>-<slug>/`. Until 2026-05-02 these were not
+# materialised in the cloud entrypoint, so driveEnabled() returned false and
+# all outbox uploads were silently skipped — fixed here by reading the SA
+# JSONs and folder IDs from 1Password at boot. Fail-closed on vault read
+# error (same pattern as Anthropic and Workspace SA).
+CBS_DRIVE_SA_KEY_PATH="${SECRETS_DIR}/cbs-drive-sa.json"
+op read "op://CoS-Dispatcher/drive-cbs/service-account-json" > "${CBS_DRIVE_SA_KEY_PATH}"
+chown dispatcher:dispatcher "${CBS_DRIVE_SA_KEY_PATH}"
+chmod 600 "${CBS_DRIVE_SA_KEY_PATH}"
+export CBS_DRIVE_SA_KEY_PATH
+CBS_DRIVE_FOLDER_ID=$(op read "op://CoS-Dispatcher/drive-cbs/folder-id")
+export CBS_DRIVE_FOLDER_ID
+
+WR_DRIVE_SA_KEY_PATH="${SECRETS_DIR}/wr-drive-sa.json"
+op read "op://CoS-Dispatcher/drive-wr/service-account-json" > "${WR_DRIVE_SA_KEY_PATH}"
+chown dispatcher:dispatcher "${WR_DRIVE_SA_KEY_PATH}"
+chmod 600 "${WR_DRIVE_SA_KEY_PATH}"
+export WR_DRIVE_SA_KEY_PATH
+WR_DRIVE_FOLDER_ID=$(op read "op://CoS-Dispatcher/drive-wr/folder-id")
+export WR_DRIVE_FOLDER_ID
+
 # ── Drop privileges ──────────────────────────────────────────────────────────
 # HOME must be set explicitly: gosu propagates the parent environ but does
 # not synthesise HOME for the target user. claude and bun both read $HOME
