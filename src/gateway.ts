@@ -83,7 +83,7 @@ import {
 } from './continuation.js'
 import { drainKickoffRequests, type KickoffRequest } from './kickoffInbox.js'
 import { drainTenderRequests, type TenderRequest } from './tenderQueue.js'
-import { appendProjectLog, getProject } from './projects.js'
+import { addProjectSpend, appendProjectLog, getProject } from './projects.js'
 import { chunk } from './chunker.js'
 import { logDispatcher } from './logger.js'
 import { getCorrelationId, withCorrelation } from './correlationContext.js'
@@ -1553,6 +1553,11 @@ async function handleKickoffInner(
       result.durationMs,
       result.toolsUsed,
     )
+    if (result.cost) {
+      // R-953: accumulate PM-turn cost into the project ledger so the PM
+      // can pace against budgetCeilingUsd at every turn.
+      addProjectSpend(req.projectId, result.cost)
+    }
     recordSuccess()
 
     const newFiles = diffOutbox(outboxBefore)
@@ -1700,6 +1705,11 @@ async function handleTenderInner(
       result.durationMs,
       result.toolsUsed,
     )
+    if (result.cost) {
+      // R-953: accumulate PM-turn cost into the project ledger so the PM
+      // can pace against budgetCeilingUsd at every turn.
+      addProjectSpend(req.projectId, result.cost)
+    }
     recordSuccess()
 
     const newFiles = diffOutbox(outboxBefore)
