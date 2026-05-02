@@ -3,25 +3,40 @@
  * Gmail helper for Alex (acting on jeffdusting@waterroads.com.au).
  *
  * Subcommands:
- *   list-unread [--max N] [--query "Q"]   — list unread (or query-matched) messages, summary form.
+ *   list-unread [--max N] [--query "Q"]   — list unread (or query-matched) messages.
  *   get-message --id ID                    — fetch full message body + headers as JSON.
  *   list-threads [--max N] [--query "Q"]  — list threads with subject + last-message snippet.
  *   get-thread --id ID                     — fetch a thread with all messages.
- *   draft-reply --thread-id ID --body B   — create a draft reply on the thread.
- *   draft-new --to T --subject S --body B  — create a brand-new draft.
- *   list-drafts [--max N]                  — list draft IDs with subject + recipient.
+ *   draft-reply --thread-id ID --body B   — create a draft reply (lane-tagged).
+ *   draft-new --to T --subject S --body B  — create a brand-new draft (lane-tagged).
+ *   list-drafts [--max N]                  — list draft IDs with subject, recipient, and lane.
  *   delete-draft --id ID                   — delete a draft.
+ *   send-graduated --id ID                 — gated send for drafts whose lane has graduated.
  *
- * Send is INTENTIONALLY ABSENT. Per the operator's standing rule, Alex never
- * sends as Jeff. Drafts only. Future graduation to autonomous-send for
- * specific email types is tracked under R-952 (approval-lane port from the
- * pre-migration alex-morgan runtime).
+ * Drafts are lane-tagged at creation per R-952. Lane label values are
+ * `lane/autonomous`, `lane/approval`, or `lane/principal_only`. The lane is
+ * derived from the inbound classifier (`src/lanes/classifier.ts`) plus the
+ * always-approval overlay (`src/lanes/alwaysApproval.ts`).
+ *
+ * The `send-graduated` subcommand is the only path that sends drafts. It
+ * applies the full gating chain — lane label present, overlay does not force
+ * approval, graduation config has the lane in `autonomousLanes`. The default
+ * graduation config is empty for both EAs, so drafts-only is preserved unless
+ * the operator explicitly graduates a lane in
+ * `config/graduation-{principal}.json`.
  *
  * All output is JSON to stdout. Errors print { ok: false, error: ... } and
- * exit non-zero.
+ * exit non-zero. Audit decisions are appended to
+ * `${STATE_DIR:-/data/state}/lanes-audit.jsonl`.
  */
 
+import { appendFileSync, mkdirSync } from 'fs'
+import { join, dirname } from 'path'
 import { ALEX_PRINCIPAL, gmailService, AuthError } from './auth.js'
+import { classify } from '../../src/lanes/classifier.js'
+import { shouldForceApproval, loadAlwaysApprovalConfig, alwaysApprovalConfigPath } from '../../src/lanes/alwaysApproval.js'
+import { canAutoSend, loadGraduationConfig, graduationConfigPath } from '../../src/lanes/graduationConfig.js'
+import type { Lane, Principal } from '../../src/lanes/types.js'
 
 type Args = Record<string, string | boolean>
 
@@ -56,6 +71,129 @@ function header(headers: { name?: string | null; value?: string | null }[] | und
   if (!headers) return ''
   const h = headers.find((x) => x.name?.toLowerCase() === name.toLowerCase())
   return h?.value ?? ''
+}
+
+// ─── Lane labelling ──────────────────────────────────────────────────────────
+//
+// Drafts created by this helper are tagged with one of three Gmail labels:
+//   lane/autonomous, lane/approval, lane/principal_only
+// The lane is computed at draft-creation by classify() + always-approval
+// overlay. Helpers below resolve label IDs (creating the label if missing)
+// and apply the lane label to the draft's underlying message.
+
+const LANE_LABEL_PREFIX = 'lane'
+
+function laneLabelName(lane: Lane): string {
+  return `${LANE_LABEL_PREFIX}/${lane}`
+}
+
+const labelIdCache = new Map<string, string>()
+
+interface GmailService {
+  users: {
+    labels: {
+      list(args: { userId: string }): Promise<{ data: { labels?: Array<{ id?: string | null; name?: string | null }> | null } }>
+      create(args: { userId: string; requestBody: { name: string; labelListVisibility?: string; messageListVisibility?: string } }): Promise<{ data: { id?: string | null } }>
+    }
+    messages: {
+      modify(args: { userId: string; id: string; requestBody: { addLabelIds?: string[]; removeLabelIds?: string[] } }): Promise<unknown>
+      get(args: { userId: string; id: string; format?: string; metadataHeaders?: string[] }): Promise<{ data: { id?: string | null; threadId?: string | null; labelIds?: string[] | null; snippet?: string | null; payload?: { headers?: Array<{ name?: string | null; value?: string | null }> | null } | null } }>
+      list(args: { userId: string; q?: string; maxResults?: number }): Promise<{ data: { messages?: Array<{ id?: string | null }> | null } }>
+    }
+    threads: {
+      get(args: { userId: string; id: string; format?: string }): Promise<{ data: { id?: string | null; messages?: Array<{ id?: string | null; payload?: { headers?: Array<{ name?: string | null; value?: string | null }> | null } | null }> | null } }>
+    }
+    drafts: {
+      get(args: { userId: string; id: string; format?: string }): Promise<{ data: { id?: string | null; message?: { id?: string | null; threadId?: string | null; labelIds?: string[] | null; snippet?: string | null; payload?: { headers?: Array<{ name?: string | null; value?: string | null }> | null } | null } | null } }>
+      send(args: { userId: string; requestBody: { id: string } }): Promise<unknown>
+    }
+  }
+}
+
+async function getOrCreateLabelId(gmail: GmailService, name: string): Promise<string> {
+  if (labelIdCache.has(name)) return labelIdCache.get(name)!
+  const list = await gmail.users.labels.list({ userId: 'me' })
+  const existing = (list.data.labels ?? []).find((l) => l.name === name)
+  if (existing?.id) {
+    labelIdCache.set(name, existing.id)
+    return existing.id
+  }
+  const created = await gmail.users.labels.create({
+    userId: 'me',
+    requestBody: { name, labelListVisibility: 'labelShow', messageListVisibility: 'show' },
+  })
+  if (!created.data.id) throw new Error(`failed to create label ${name}`)
+  labelIdCache.set(name, created.data.id)
+  return created.data.id
+}
+
+async function applyLaneLabel(gmail: GmailService, messageId: string, lane: Lane): Promise<string> {
+  const labelName = laneLabelName(lane)
+  const labelId = await getOrCreateLabelId(gmail, labelName)
+  await gmail.users.messages.modify({
+    userId: 'me',
+    id: messageId,
+    requestBody: { addLabelIds: [labelId] },
+  })
+  return labelName
+}
+
+function principalForAlex(): Principal {
+  return 'jeff'
+}
+
+function dispatcherDir(): string {
+  // The compiled gmail.ts ships under /app/scripts/google-workspace/ in the
+  // Fly image. The dispatcher root is two levels up.
+  // Allow override via env for tests.
+  return process.env.DISPATCHER_DIR || '/app'
+}
+
+function laneAuditPath(): string {
+  const stateDir = process.env.STATE_DIR || '/data/state'
+  return join(stateDir, 'lanes-audit.jsonl')
+}
+
+interface LaneAuditEntry {
+  ts: string
+  principal: Principal
+  action: 'draft-tag' | 'send-graduated' | 'send-blocked'
+  draftId?: string
+  messageId?: string
+  threadId?: string
+  lane?: Lane
+  reasons?: string[]
+  forceApproval?: { force: boolean; reason: string | null }
+  graduation?: { allowed: boolean; reason: string }
+  blockedReason?: string
+  correlationId?: string
+}
+
+function appendLaneAudit(entry: Omit<LaneAuditEntry, 'ts'>): void {
+  try {
+    const path = laneAuditPath()
+    mkdirSync(dirname(path), { recursive: true })
+    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry })
+    appendFileSync(path, line + '\n', { encoding: 'utf8' })
+  } catch {
+    // Audit failures must not block the main path. Stderr captures the issue
+    // via the dispatcher's worker stdout/stderr collector.
+  }
+}
+
+interface ClassifyForOutboundInput {
+  subject: string
+  body: string
+  fromHeader: string
+}
+
+function classifyOutbound(input: ClassifyForOutboundInput): ReturnType<typeof classify> {
+  return classify({
+    subject: input.subject,
+    body: input.body,
+    fromHeader: input.fromHeader,
+    internalDomains: ['waterroads.com.au', 'cbsaustralia.com.au', 'cbs.com.au'],
+  })
 }
 
 async function listUnread(args: Args) {
@@ -198,7 +336,7 @@ async function draftReply(args: Args) {
   const body = String(args.body ?? '')
   if (!threadId || !body) fail('--thread-id and --body required', 'BAD_ARGS')
   const gmail = gmailService(ALEX_PRINCIPAL)
-  const t = await gmail.users.threads.get({ userId: 'me', id: threadId, format: 'metadata' })
+  const t = await gmail.users.threads.get({ userId: 'me', id: threadId, format: 'full' })
   const last = (t.data.messages ?? []).at(-1)
   if (!last) fail(`thread ${threadId} has no messages`, 'EMPTY_THREAD')
   const fromAddr = header(last.payload?.headers, 'From')
@@ -206,6 +344,25 @@ async function draftReply(args: Args) {
   const messageIdHeader = header(last.payload?.headers, 'Message-ID')
   const refs = header(last.payload?.headers, 'References')
   const replySubject = subject.toLowerCase().startsWith('re:') ? subject : `Re: ${subject}`
+
+  // Classify against the inbound message so the outbound draft inherits the
+  // lane the inbound landed in. This keeps drafts traceable: a reply to a
+  // government enquiry stays in approval; a reply to an internal-domain
+  // scheduling chat stays autonomous.
+  const inboundBody = String((last.payload as { body?: { data?: string } } | undefined)?.body?.data ?? '')
+  const inboundDecoded = inboundBody ? Buffer.from(inboundBody, 'base64url').toString('utf8').slice(0, 2000) : ''
+  const classification = classifyOutbound({
+    subject: subject || '',
+    body: inboundDecoded,
+    fromHeader: fromAddr,
+  })
+  const principal = principalForAlex()
+  const overlay = shouldForceApproval({
+    fromHeader: fromAddr,
+    config: loadAlwaysApprovalConfig(alwaysApprovalConfigPath(dispatcherDir(), principal)),
+  })
+  const effectiveLane: Lane = overlay.force ? 'approval' : classification.lane
+
   const rfc822 = buildRfc822({
     to: fromAddr,
     subject: replySubject,
@@ -218,11 +375,50 @@ async function draftReply(args: Args) {
     userId: 'me',
     requestBody: { message: { raw, threadId } },
   })
+
+  const messageId = draft.data.message?.id ?? ''
+  let labelApplied: string | null = null
+  if (messageId) {
+    try {
+      labelApplied = await applyLaneLabel(gmail, messageId, effectiveLane)
+    } catch (err) {
+      // Label-apply failure is recoverable — draft exists; lane just is not
+      // tagged. Surface in audit but do not fail the call.
+      appendLaneAudit({
+        principal,
+        action: 'draft-tag',
+        draftId: draft.data.id ?? undefined,
+        messageId,
+        threadId: draft.data.message?.threadId ?? undefined,
+        lane: effectiveLane,
+        blockedReason: `label-apply-failed: ${(err as Error).message}`,
+      })
+    }
+  }
+
+  appendLaneAudit({
+    principal,
+    action: 'draft-tag',
+    draftId: draft.data.id ?? undefined,
+    messageId,
+    threadId: draft.data.message?.threadId ?? undefined,
+    lane: effectiveLane,
+    reasons: classification.reasons,
+    forceApproval: overlay,
+    correlationId: process.env.CLAUDE_CORRELATION_ID,
+  })
+
   ok({
     draftId: draft.data.id,
     messageId: draft.data.message?.id,
     threadId: draft.data.message?.threadId,
-    note: 'drafts-only — operator approval required before send',
+    lane: effectiveLane,
+    classifierLane: classification.lane,
+    classifierConfidence: classification.confidence,
+    classifierReasons: classification.reasons,
+    forceApproval: overlay,
+    laneLabel: labelApplied,
+    note: 'drafts-only — send via send-graduated only when graduated',
   })
 }
 
@@ -233,15 +429,82 @@ async function draftNew(args: Args) {
   const cc = args.cc ? String(args.cc) : undefined
   if (!to || !subject || !body) fail('--to, --subject and --body required', 'BAD_ARGS')
   const gmail = gmailService(ALEX_PRINCIPAL)
+
+  // For draft-new there is no inbound message — classify the outbound itself.
+  // Use the To: address as the fromHeader proxy so gov/internal/category
+  // signals still apply. Always-approval overlay also runs against the To:.
+  const classification = classifyOutbound({ subject, body, fromHeader: to })
+  const principal = principalForAlex()
+  const overlay = shouldForceApproval({
+    fromHeader: to,
+    config: loadAlwaysApprovalConfig(alwaysApprovalConfigPath(dispatcherDir(), principal)),
+  })
+  const effectiveLane: Lane = overlay.force ? 'approval' : classification.lane
+
   const rfc822 = buildRfc822({ to, subject, body, cc })
   const raw = Buffer.from(rfc822, 'utf8').toString('base64url')
   const draft = await gmail.users.drafts.create({ userId: 'me', requestBody: { message: { raw } } })
+
+  const messageId = draft.data.message?.id ?? ''
+  let labelApplied: string | null = null
+  if (messageId) {
+    try {
+      labelApplied = await applyLaneLabel(gmail, messageId, effectiveLane)
+    } catch (err) {
+      appendLaneAudit({
+        principal,
+        action: 'draft-tag',
+        draftId: draft.data.id ?? undefined,
+        messageId,
+        threadId: draft.data.message?.threadId ?? undefined,
+        lane: effectiveLane,
+        blockedReason: `label-apply-failed: ${(err as Error).message}`,
+      })
+    }
+  }
+
+  appendLaneAudit({
+    principal,
+    action: 'draft-tag',
+    draftId: draft.data.id ?? undefined,
+    messageId,
+    threadId: draft.data.message?.threadId ?? undefined,
+    lane: effectiveLane,
+    reasons: classification.reasons,
+    forceApproval: overlay,
+    correlationId: process.env.CLAUDE_CORRELATION_ID,
+  })
+
   ok({
     draftId: draft.data.id,
     messageId: draft.data.message?.id,
     threadId: draft.data.message?.threadId,
-    note: 'drafts-only — operator approval required before send',
+    lane: effectiveLane,
+    classifierLane: classification.lane,
+    classifierConfidence: classification.confidence,
+    classifierReasons: classification.reasons,
+    forceApproval: overlay,
+    laneLabel: labelApplied,
+    note: 'drafts-only — send via send-graduated only when graduated',
   })
+}
+
+async function laneFromLabels(
+  gmail: GmailService,
+  messageId: string,
+): Promise<Lane | null> {
+  const list = await gmail.users.labels.list({ userId: 'me' })
+  const labels = list.data.labels ?? []
+  const msg = await gmail.users.messages.get({ userId: 'me', id: messageId, format: 'metadata' })
+  const labelIds = msg.data.labelIds ?? []
+  for (const id of labelIds) {
+    const l = labels.find((x) => x.id === id)
+    if (!l?.name) continue
+    if (l.name === laneLabelName('autonomous')) return 'autonomous'
+    if (l.name === laneLabelName('approval')) return 'approval'
+    if (l.name === laneLabelName('principal_only')) return 'principal_only'
+  }
+  return null
 }
 
 async function listDrafts(args: Args) {
@@ -256,13 +519,16 @@ async function listDrafts(args: Args) {
         id,
         format: 'metadata',
       })
+      const messageId = d.data.message?.id ?? null
+      const lane = messageId ? await laneFromLabels(gmail, messageId) : null
       return {
         draftId: d.data.id,
-        messageId: d.data.message?.id,
+        messageId,
         threadId: d.data.message?.threadId,
         snippet: d.data.message?.snippet,
         to: header(d.data.message?.payload?.headers, 'To'),
         subject: header(d.data.message?.payload?.headers, 'Subject'),
+        lane,
       }
     }),
   )
@@ -277,6 +543,96 @@ async function deleteDraft(args: Args) {
   ok({ draftId: id, deleted: true })
 }
 
+async function sendGraduated(args: Args) {
+  const id = String(args.id ?? '')
+  if (!id) fail('--id required', 'BAD_ARGS')
+  const gmail = gmailService(ALEX_PRINCIPAL)
+  const principal = principalForAlex()
+
+  // Step 1 — fetch the draft and resolve its lane label.
+  const draft = await gmail.users.drafts.get({ userId: 'me', id, format: 'metadata' })
+  const messageId = draft.data.message?.id
+  if (!messageId) fail(`draft ${id} has no underlying message`, 'API_ERROR')
+  const lane = await laneFromLabels(gmail, messageId)
+  if (!lane) {
+    appendLaneAudit({
+      principal,
+      action: 'send-blocked',
+      draftId: id,
+      messageId,
+      threadId: draft.data.message?.threadId ?? undefined,
+      blockedReason: 'no-lane-label',
+      correlationId: process.env.CLAUDE_CORRELATION_ID,
+    })
+    fail(`draft ${id} has no lane label — was it created via this helper? send-graduated requires lane-tagging`, 'NO_LANE_LABEL')
+  }
+
+  // Step 2 — apply always-approval overlay against the To: address.
+  const toHeader = header(draft.data.message?.payload?.headers, 'To')
+  const overlay = shouldForceApproval({
+    fromHeader: toHeader,
+    config: loadAlwaysApprovalConfig(alwaysApprovalConfigPath(dispatcherDir(), principal)),
+  })
+  if (overlay.force) {
+    appendLaneAudit({
+      principal,
+      action: 'send-blocked',
+      draftId: id,
+      messageId,
+      threadId: draft.data.message?.threadId ?? undefined,
+      lane,
+      forceApproval: overlay,
+      blockedReason: `overlay-forced-approval: ${overlay.reason}`,
+      correlationId: process.env.CLAUDE_CORRELATION_ID,
+    })
+    fail(
+      `always-approval overlay forces principal approval for this recipient: ${overlay.reason}`,
+      'OVERLAY_FORCES_APPROVAL',
+    )
+  }
+
+  // Step 3 — check graduation config.
+  const grad = canAutoSend(lane, loadGraduationConfig(graduationConfigPath(dispatcherDir(), principal)))
+  if (!grad.allowed) {
+    appendLaneAudit({
+      principal,
+      action: 'send-blocked',
+      draftId: id,
+      messageId,
+      threadId: draft.data.message?.threadId ?? undefined,
+      lane,
+      forceApproval: overlay,
+      graduation: grad,
+      blockedReason: grad.reason,
+      correlationId: process.env.CLAUDE_CORRELATION_ID,
+    })
+    fail(`lane '${lane}' is not graduated for principal '${principal}' — drafts-only. Edit config/graduation-${principal}.json to graduate.`, 'LANE_NOT_GRADUATED')
+  }
+
+  // Step 4 — send. Audit-log the success.
+  await gmail.users.drafts.send({ userId: 'me', requestBody: { id } })
+  appendLaneAudit({
+    principal,
+    action: 'send-graduated',
+    draftId: id,
+    messageId,
+    threadId: draft.data.message?.threadId ?? undefined,
+    lane,
+    forceApproval: overlay,
+    graduation: grad,
+    correlationId: process.env.CLAUDE_CORRELATION_ID,
+  })
+  ok({
+    draftId: id,
+    messageId,
+    threadId: draft.data.message?.threadId,
+    sent: true,
+    lane,
+    graduation: grad,
+    forceApproval: overlay,
+  })
+}
+
 const COMMANDS: Record<string, (args: Args) => Promise<void>> = {
   'list-unread': listUnread,
   'get-message': getMessage,
@@ -286,6 +642,7 @@ const COMMANDS: Record<string, (args: Args) => Promise<void>> = {
   'draft-new': draftNew,
   'list-drafts': listDrafts,
   'delete-draft': deleteDraft,
+  'send-graduated': sendGraduated,
 }
 
 async function main() {
