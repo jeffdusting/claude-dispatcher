@@ -59,7 +59,9 @@ describe('allocator behaviour', () => {
     return path
   }
 
-  function projectsDirWith(records: Array<{ id: string; pmName?: string; status: string }>): string {
+  function projectsDirWith(
+    records: Array<{ id: string; pmName?: string; status: string; owningEA?: string }>,
+  ): string {
     const dir = mkdtempSync(join(tmp, 'projects-'))
     for (const r of records) {
       writeFileSync(
@@ -80,7 +82,7 @@ describe('allocator behaviour', () => {
           entity: 'cbs',
           paperclipTaskIds: [],
           correlationId: 'corr',
-          owningEA: 'jeff',
+          owningEA: r.owningEA ?? 'jeff',
           schemaVersion: 4,
           ...(r.pmName ? { pmName: r.pmName } : {}),
         }),
@@ -139,6 +141,32 @@ describe('allocator behaviour', () => {
       { id: 'p-dddd0001', pmName: 'Iris', status: 'blocked' },
     ])
     const r = allocatePMName({ projectId: 'p-eeee0002', projectsDir: dir })
+    expect(r.name).toBe('Felix')
+  })
+
+  test('roster is globally unique across EAs (Alex and Quinn draw from the same pool)', () => {
+    process.env.PM_ROSTER_CONFIG_PATH = writeRoster(['Felix', 'Iris', 'Mei'])
+    _resetPMRosterCacheForTests()
+    // Alex (jeff partition) holds Felix; the same name must not be allocated
+    // to Quinn (sarah partition) for a concurrent project.
+    const dir = projectsDirWith([
+      { id: 'p-alex0001', pmName: 'Felix', status: 'running', owningEA: 'jeff' },
+    ])
+    const r = allocatePMName({ projectId: 'p-quinn0001', projectsDir: dir })
+    expect(r.name).not.toBe('Felix')
+    expect(r.name).toBe('Iris')
+    expect(r.fallback).toBe(false)
+  })
+
+  test('Quinn-side completed project frees a name for Alex (and vice versa)', () => {
+    process.env.PM_ROSTER_CONFIG_PATH = writeRoster(['Felix', 'Iris'])
+    _resetPMRosterCacheForTests()
+    // Quinn (sarah partition) had Felix on a project that is now complete —
+    // Alex (jeff partition) can re-take Felix for a fresh project.
+    const dir = projectsDirWith([
+      { id: 'p-quinn1234', pmName: 'Felix', status: 'complete', owningEA: 'sarah' },
+    ])
+    const r = allocatePMName({ projectId: 'p-alex5678', projectsDir: dir })
     expect(r.name).toBe('Felix')
   })
 

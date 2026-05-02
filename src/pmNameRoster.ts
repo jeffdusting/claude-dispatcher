@@ -6,15 +6,25 @@
  * is stored on the project record and travels through to the PM worker via
  * the `CLAUDE_PM_NAME` env var so the PM signs Discord posts with the name.
  *
+ * **Globally unique across EAs.** The roster is shared between Alex (Jeff's
+ * partition) and Quinn (Sarah's partition). If Alex has an active project
+ * named "Felix", Quinn cannot allocate "Felix" for a concurrent project —
+ * `namesInUse` reads every project descriptor regardless of `owningEA`. This
+ * is deliberate: concurrent threads carrying the same PM name would be
+ * indistinguishable in Discord and audit logs even if they belong to
+ * different principals.
+ *
  * Allocation algorithm:
  *
- *   1. Load the roster (~100 names, gender-balanced, multicultural Australia).
- *   2. List active projects — anything not in {complete, failed, cancelled}.
+ *   1. Load the roster (100 names, gender-balanced, multicultural Australia).
+ *   2. List active projects across the entire dispatcher — anything not in
+ *      {complete, failed, cancelled}, regardless of owningEA.
  *   3. Walk the roster in order; return the first name not held by an active
  *      project.
- *   4. If every name is in use (>= 100 concurrent active projects), fall back
- *      to a deterministic synthetic name `PM-<projectId-suffix>` so the
- *      project still gets a stable identity. Should never happen in practice.
+ *   4. If every name is in use (>= 100 concurrent active projects across all
+ *      EAs), fall back to a deterministic synthetic name
+ *      `PM-<projectId-suffix>` so the project still gets a stable identity.
+ *      Should never happen in practice.
  *
  * Names freed when a project completes are immediately reusable. Audit logs
  * always carry the project ID alongside the name so reuse-after-retirement
