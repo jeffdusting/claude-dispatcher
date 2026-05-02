@@ -97,10 +97,10 @@ describe('selectEAForAuthor', () => {
   })
 
   test('rejects malformed config (wrong schemaVersion)', () => {
-    // schemaVersion 1 and 2 are accepted; an out-of-range value (e.g. 3) is
-    // rejected. Schema bump to v2 (Migration Plan §14.2.4) added the
-    // partitions block; v1 configs continue to load with empty metadata.
-    writeFileSync(cfgPath, JSON.stringify({ schemaVersion: 3, mappings: { a: 'x' } }))
+    // schemaVersion 1, 2 and 3 are accepted; an out-of-range value (e.g. 99)
+    // is rejected. v2 (Migration Plan §14.2.4) added the partitions block;
+    // v3 (R-940 §14, 2026-05-02) added per-partition runtime + LLM fields.
+    writeFileSync(cfgPath, JSON.stringify({ schemaVersion: 99, mappings: { a: 'x' } }))
     _resetFirstAgentCacheForTests()
     expect(() => selectEAForAuthor('a')).toThrow()
   })
