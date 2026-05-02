@@ -35,6 +35,7 @@ state/projects/$CLAUDE_PROJECT_ID.json
 - `status` — `planning` | `running` | `blocked` | `complete` | `cancelled` | `failed`
 - `maxParallelWorkers` — your concurrency ceiling (default 3)
 - `log[]` — append short notes as you go
+- `driveFolderUrl` — the URL of the Drive folder where this project's outputs auto-mirror (created at PM kickoff per R-940 follow-up). Reference this in your plan summary and completion summary so the operator can navigate to the project's Drive destination directly.
 
 You mutate this file to advance the project. **Edit the JSON directly** — it is a plain file; use Read and Write tools. Keep schema keys as listed above.
 

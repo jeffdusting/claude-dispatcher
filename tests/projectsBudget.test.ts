@@ -47,6 +47,30 @@ const baseV5Record = {
   schemaVersion: PROJECT_SCHEMA_VERSION,
 }
 
+describe('schema v6 normalisation (drive folder fields)', () => {
+  beforeEach(() => {
+    rmSync(PROJECTS_DIR, { recursive: true, force: true })
+    mkdirSync(PROJECTS_DIR, { recursive: true })
+  })
+
+  test('v5 record without drive fields → driveFolderUrl/Id undefined', () => {
+    const r = normaliseProjectRecord({ ...baseV5Record, schemaVersion: 5 })!
+    expect(r.driveFolderUrl).toBeUndefined()
+    expect(r.driveFolderId).toBeUndefined()
+  })
+
+  test('v6 record with drive fields preserves values', () => {
+    const r = normaliseProjectRecord({
+      ...baseV5Record,
+      schemaVersion: 6,
+      driveFolderUrl: 'https://drive.google.com/drive/folders/abc123',
+      driveFolderId: 'abc123',
+    })!
+    expect(r.driveFolderUrl).toBe('https://drive.google.com/drive/folders/abc123')
+    expect(r.driveFolderId).toBe('abc123')
+  })
+})
+
 describe('schema v5 normalisation', () => {
   beforeEach(() => {
     rmSync(PROJECTS_DIR, { recursive: true, force: true })

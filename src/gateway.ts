@@ -69,7 +69,7 @@ import {
   WorkerSlotUnavailableError,
   type OutputFile,
 } from './claude.js'
-import { uploadAndSummarise, isDriveEnabled, renameThreadFolder } from './drive.js'
+import { uploadAndSummarise, isDriveEnabled, renameThreadFolder, ensureProjectDriveFolder } from './drive.js'
 import { type Entity } from './entity.js'
 import { resolveEntityForThread } from './entityResolver.js'
 import {
@@ -83,7 +83,7 @@ import {
 } from './continuation.js'
 import { drainKickoffRequests, type KickoffRequest } from './kickoffInbox.js'
 import { drainTenderRequests, type TenderRequest } from './tenderQueue.js'
-import { addProjectSpend, appendProjectLog, getProject } from './projects.js'
+import { addProjectSpend, appendProjectLog, getProject, updateProject } from './projects.js'
 import { chunk } from './chunker.js'
 import { logDispatcher } from './logger.js'
 import { getCorrelationId, withCorrelation } from './correlationContext.js'
@@ -1546,6 +1546,38 @@ async function handleKickoffInner(
   createSession(req.projectThreadId, `Project: ${project.name}`)
   trackSessionCreated(req.projectThreadId, `Project: ${project.name}`)
   appendProjectLog(req.projectId, 'PM kickoff starting.')
+
+  // R-940 follow-up (operator directive 2026-05-02): pre-create the Drive
+  // folder for this project at kickoff so the operator can browse the
+  // destination before any output is produced. The PM reads
+  // project.driveFolderUrl at every turn to know where to direct outputs.
+  // Best-effort — Drive failure does not block kickoff.
+  try {
+    const folder = await ensureProjectDriveFolder({
+      entity: project.entity,
+      threadId: req.projectThreadId,
+      threadTitle: project.name,
+    })
+    if (folder) {
+      updateProject(req.projectId, (r) => {
+        r.driveFolderId = folder.folderId
+        r.driveFolderUrl = folder.url
+        return r
+      })
+      appendProjectLog(req.projectId, `Drive folder ensured at kickoff: ${folder.url}`)
+      logDispatcher('drive_project_folder_ensured', {
+        projectId: req.projectId,
+        entity: project.entity,
+        folderId: folder.folderId,
+        url: folder.url,
+      })
+    }
+  } catch (err) {
+    logDispatcher('drive_ensure_project_folder_kickoff_failed', {
+      projectId: req.projectId,
+      error: String(err).slice(0, 200),
+    })
+  }
 
   await startTyping(channel)
   const [progressMsgId] = await sendToChannel(channel, 'Standing up project manager...')
