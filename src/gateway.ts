@@ -87,6 +87,7 @@ import { addProjectSpend, appendProjectLog, getProject } from './projects.js'
 import { chunk } from './chunker.js'
 import { logDispatcher } from './logger.js'
 import { getCorrelationId, withCorrelation } from './correlationContext.js'
+import { forkToShadow, shadowForkEnabled } from './hermesShadow.js'
 import { ingestMessage, backfillAll } from './ingest.js'
 import {
   checkRateLimit,
@@ -1173,6 +1174,28 @@ async function handleMessage(msg: Message): Promise<void> {
   // to Sarah's partition exercises Quinn's agent definition rather than
   // the global default. Same async-local-storage pattern as
   // `withCorrelation()`.
+  //
+  // R-940 §13 — Hermes shadow fork. If the partition has a shadow
+  // configured (HERMES_SHADOW_INPUT_DIR + HERMES_SHADOW_PARTITIONS env
+  // vars), write a copy of the message to the shadow's input directory.
+  // No-op when no shadow is provisioned. Read-only — the shadow only
+  // observes; it never posts back to Discord.
+  if (shadowForkEnabled(binding.binding.partition)) {
+    forkToShadow({
+      correlationId: getCorrelationId() ?? `legacy-${msg.id}`,
+      threadId: msg.channel.id,
+      channelId: msg.channelId,
+      messageId: msg.id,
+      authorId: msg.author.id,
+      authorUsername: msg.author.username,
+      partition: binding.binding.partition,
+      contentRaw: msg.content,
+      isThread: msg.channel.isThread(),
+      hasAttachments: msg.attachments.size > 0,
+      ts: Date.now(),
+    })
+  }
+
   await withPartition(binding.binding.partition, () => handleMessageInner(msg))
 }
 
