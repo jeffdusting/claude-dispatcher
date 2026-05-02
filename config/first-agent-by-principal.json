@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 2,
-  "comment": "Maps Discord author IDs to per-principal EA partitions and binds each partition to its principal display name, per-EA Anthropic key vault reference, and per-EA Claude agent name (Migration Plan §14.2.4 + §14.4.3; architecture v2.1 §2.2.4). Each partition lives at state/eas/<partition>/. Unmapped author IDs produce an audit-logged refusal rather than silent default routing (Δ D-015 / Migration Plan §14.2.1). Sarah's Discord author ID 1495747655152701547 mapped to the sarah partition 2026-04-30 (Phase J.1b §14.4.4 closure). Per OD-038 spawned-worker attribution per OD-012a, the per-EA Anthropic key vault reference is consumed by the worker spawn path; the operator rotated Quinn's runtime key on 2026-04-30 and stored the fresh value at op://CoS-Dispatcher/quinn-runtime/credential.",
+  "schemaVersion": 3,
+  "comment": "Maps Discord author IDs to per-principal EA partitions and binds each partition to its principal display name, runtime + LLM provider/model/key, and per-EA agent definition name. v3 (R-940 §14, 2026-05-02): per-partition runtime + LLM fields. v3 fields (runtime, llmProvider, llmModel, llmKeyVaultRef) default to claude-code + anthropic + claude-opus-4-7 + anthropicKeyVaultRef when absent so v2 records continue to load unchanged. Unmapped author IDs produce an audit-logged refusal rather than silent default routing (Δ D-015 / Migration Plan §14.2.1).",
   "mappings": {
     "1495020845846761582": "jeff",
     "1495747655152701547": "sarah"
@@ -8,13 +8,21 @@
   "partitions": {
     "jeff": {
       "principalName": "Jeff Dusting",
-      "anthropicKeyVaultRef": "op://CoS-Dispatcher/alex-morgan-runtime/credential",
-      "claudeAgent": "chief-of-staff"
+      "claudeAgent": "chief-of-staff",
+      "runtime": "claude-code",
+      "llmProvider": "anthropic",
+      "llmModel": "claude-opus-4-7",
+      "llmKeyVaultRef": "op://CoS-Dispatcher/alex-morgan-runtime/credential",
+      "anthropicKeyVaultRef": "op://CoS-Dispatcher/alex-morgan-runtime/credential"
     },
     "sarah": {
       "principalName": "Sarah Taylor",
-      "anthropicKeyVaultRef": "op://CoS-Dispatcher/quinn-runtime/credential",
-      "claudeAgent": "quinn"
+      "claudeAgent": "quinn",
+      "runtime": "claude-code",
+      "llmProvider": "anthropic",
+      "llmModel": "claude-opus-4-7",
+      "llmKeyVaultRef": "op://CoS-Dispatcher/quinn-runtime/credential",
+      "anthropicKeyVaultRef": "op://CoS-Dispatcher/quinn-runtime/credential"
     }
   }
 }
